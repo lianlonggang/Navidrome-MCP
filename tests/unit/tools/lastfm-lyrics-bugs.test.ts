@@ -440,4 +440,61 @@ describe('Claim C — Lyrics transport errors visible vs. swallowed', () => {
     // .500 milliseconds → 10s + 500ms = 10500ms
     expect(result.synced?.[2]).toMatchObject({ timeMs: 10500, text: 'Line three' });
   });
+
+  it('getLyrics keeps lines whose timestamp tag is not the first char (leading whitespace/CR/indent)', async () => {
+    // Community-sourced LRC text often has a leading space, a stray `\r` (from
+    // `\r\n` line endings), or hand indentation before the `[mm:ss.xx]` tag.
+    // Regression: an anchored `^`-tag matcher without a leading trim dropped
+    // the entire line — timestamp AND lyric — silently. All lines must survive.
+    const lrclibResponse = {
+      id: 789,
+      trackName: 'Whitespace',
+      artistName: 'Test Artist',
+      albumName: 'Test Album',
+      duration: 120,
+      instrumental: false,
+      plainLyrics: 'One\nTwo\nThree',
+      // Leading space, leading CR, and leading tab respectively.
+      syncedLyrics: ' [00:01.00]One\n\r[00:02.00]Two\n\t[00:03.00]Three',
+    };
+    global.fetch = vi.fn().mockResolvedValue(makeFetchResponse(200, lrclibResponse));
+
+    const { getLyrics } = await import('../../../src/tools/lyrics.js');
+    const config = makeMockConfig();
+
+    const result = await getLyrics(config, { title: 'Whitespace', artist: 'Test Artist' });
+
+    expect(result.synced).toBeDefined();
+    expect(result.synced).toHaveLength(3);
+    expect(result.synced?.[0]).toMatchObject({ timeMs: 1000, text: 'One' });
+    expect(result.synced?.[1]).toMatchObject({ timeMs: 2000, text: 'Two' });
+    expect(result.synced?.[2]).toMatchObject({ timeMs: 3000, text: 'Three' });
+  });
+
+  it('getLyrics splits grouped timestamps separated by whitespace (no bracket leak into text)', async () => {
+    // LRC groups repeated timestamps on one line for repeated sections; some
+    // files put a space between the grouped tags (`[..] [..]lyric`). Both tags
+    // must yield their own timed line and neither's brackets may leak into text.
+    const lrclibResponse = {
+      id: 790,
+      trackName: 'Grouped',
+      artistName: 'Test Artist',
+      albumName: 'Test Album',
+      duration: 120,
+      instrumental: false,
+      plainLyrics: 'Chorus',
+      syncedLyrics: '[00:01.00] [00:05.00]Chorus',
+    };
+    global.fetch = vi.fn().mockResolvedValue(makeFetchResponse(200, lrclibResponse));
+
+    const { getLyrics } = await import('../../../src/tools/lyrics.js');
+    const config = makeMockConfig();
+
+    const result = await getLyrics(config, { title: 'Grouped', artist: 'Test Artist' });
+
+    expect(result.synced).toBeDefined();
+    expect(result.synced).toHaveLength(2);
+    expect(result.synced?.[0]).toMatchObject({ timeMs: 1000, text: 'Chorus' });
+    expect(result.synced?.[1]).toMatchObject({ timeMs: 5000, text: 'Chorus' });
+  });
 });

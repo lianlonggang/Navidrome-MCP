@@ -47,25 +47,45 @@ interface LRCLIBResponse {
  */
 function parseSyncedLyrics(lrcText: string): LyricsLine[] {
   const lines: LyricsLine[] = [];
-  const lrcRegex = /\[(\d{2}):(\d{2})\.(\d{2,3})\](.+)/g;
+  // Anchored tag matcher: LRC lines legally group multiple timestamps for a
+  // repeated section (e.g. `[01:02.34][01:15.67]lyric`). Extract each leading
+  // tag in turn rather than greedily swallowing later tags into the text.
+  const tagRegex = /^\[(\d{2}):(\d{2})\.(\d{2,3})\]/;
 
-  let match;
-  while ((match = lrcRegex.exec(lrcText)) !== null) {
-    const [, minutesStr = '', secondsStr = '', fractionStr = '', textStr = ''] = match;
+  for (const rawLine of lrcText.split('\n')) {
+    // Trim leading whitespace before anchoring: community-sourced LRC text may
+    // carry a leading space, a stray `\r` (from `\r\n` split), a BOM, or hand
+    // indentation. Without this the anchored regex misses the tag and the whole
+    // line — timestamp AND lyric — is silently dropped.
+    let rest = rawLine.trimStart();
+    const timestamps: number[] = [];
 
-    const minutes = parseInt(minutesStr, 10);
-    const seconds = parseInt(secondsStr, 10);
-    const fraction = parseInt(fractionStr, 10);
-    // 3-digit groups are milliseconds; 2-digit groups are centiseconds (×10).
-    const fractionMs = fractionStr.length === 3 ? fraction : fraction * 10;
-    const timeMs = (minutes * 60 + seconds) * 1000 + fractionMs;
-    const text = textStr.trim();
-    
-    if (text) {
+    let tag = tagRegex.exec(rest);
+    while (tag !== null) {
+      const [, minutesStr = '', secondsStr = '', fractionStr = ''] = tag;
+
+      const minutes = parseInt(minutesStr, 10);
+      const seconds = parseInt(secondsStr, 10);
+      const fraction = parseInt(fractionStr, 10);
+      // 3-digit groups are milliseconds; 2-digit groups are centiseconds (×10).
+      const fractionMs = fractionStr.length === 3 ? fraction : fraction * 10;
+      timestamps.push((minutes * 60 + seconds) * 1000 + fractionMs);
+
+      // trimStart again so whitespace between grouped tags (`[..] [..]lyric`)
+      // doesn't stop the loop and leak the next tag's brackets into the text.
+      rest = rest.slice(tag[0].length).trimStart();
+      tag = tagRegex.exec(rest);
+    }
+
+    const text = rest.trim();
+    if (text === '') continue;
+    for (const timeMs of timestamps) {
       lines.push({ timeMs, text });
     }
   }
-  
+
+  // Grouped/repeated timestamps can arrive out of order — keep chronological.
+  lines.sort((a, b) => a.timeMs - b.timeMs);
   return lines;
 }
 
@@ -148,6 +168,13 @@ async function searchLyrics(params: z.infer<typeof GetLyricsSchema>, config: Con
   }
 
   const results = await response.json() as LRCLIBResponse[];
+
+  // LRCLIB is an external API: a 200 that isn't a JSON array (object, null, or
+  // an error payload) must degrade to "no lyrics found", not throw on a
+  // non-iterable value. Guard before any .length / for...of use.
+  if (!Array.isArray(results)) {
+    return null;
+  }
 
   if (results.length === 0) {
     return null;

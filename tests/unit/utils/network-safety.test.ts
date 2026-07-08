@@ -3,10 +3,13 @@
  * Copyright (C) 2025
  */
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { createServer, type Server } from 'node:http';
+import type { AddressInfo } from 'node:net';
 
 // Mock node:dns/promises BEFORE importing the module under test so that
-// hostResolvesToPrivateIp uses the mock for hostname resolution.
+// hostResolvesToPrivateIp uses the mock for hostname resolution. (safeFetch
+// targets an IP literal in its tests, so undici never hits this mock.)
 const mockDnsLookup = vi.fn();
 vi.mock('node:dns/promises', () => ({
   lookup: (...args: unknown[]) => mockDnsLookup(...args),
@@ -16,6 +19,7 @@ import {
   isHttpUrlScheme,
   isPrivateOrLocalIp,
   hostResolvesToPrivateIp,
+  safeFetch,
 } from '../../../src/utils/network-safety.js';
 
 describe('network-safety', () => {
@@ -187,5 +191,44 @@ describe('network-safety', () => {
       mockDnsLookup.mockRejectedValueOnce(new Error('ENOTFOUND'));
       await expect(hostResolvesToPrivateIp('nonexistent.example.com')).rejects.toThrow('ENOTFOUND');
     });
+  });
+});
+
+describe('safeFetch — peer-IP gating (real dispatcher, no mock)', () => {
+  let server: Server;
+  let requestHandled = false;
+  let port = 0;
+
+  beforeEach(async () => {
+    requestHandled = false;
+    server = createServer((_req, res) => {
+      // If safeFetch were NOT gating, the request would reach here.
+      requestHandled = true;
+      res.writeHead(200, { 'content-type': 'audio/mpeg' });
+      res.end('audio');
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    port = (server.address() as AddressInfo).port;
+  });
+
+  afterEach(async () => {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  });
+
+  it('refuses a connection whose actual peer is a loopback address', async () => {
+    // The server IS listening and would answer 200, but the dispatcher inspects
+    // the connected socket's remoteAddress (127.0.0.1), sees it is private, and
+    // destroys the socket before the HTTP request is written. This is the
+    // DNS-rebinding / SSRF guard: what we validate IS what we connected to.
+    await expect(safeFetch(`http://127.0.0.1:${port}/`, {})).rejects.toThrow();
+    expect(requestHandled).toBe(false);
+  });
+
+  it('surfaces the private-address refusal as the rejection cause', async () => {
+    const err = await safeFetch(`http://127.0.0.1:${port}/`, {}).catch((e: unknown) => e);
+    // Global fetch wraps connector errors in a "fetch failed" TypeError whose
+    // .cause carries our connector Error.
+    const cause = err instanceof Error && err.cause instanceof Error ? err.cause.message : String(err);
+    expect(cause).toMatch(/private\/local address/i);
   });
 });

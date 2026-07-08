@@ -181,6 +181,13 @@ class PlaybackEngine {
   // an attached MCP can derive `isRadio` from `getPlaylist()` entries whose
   // `songId` is null.
   private currentRadioStation: { name: string } | null = null;
+  // Monotonic counter bumped at the start of every full-replace load (the
+  // `enqueue(replace)` path and `enqueueRadio`). A replace always lands the new
+  // track at queue position 0, identical to the previous load, so consumers that
+  // cache per-position state (e.g. `now_playing`'s VBR duration-repair and
+  // not-radio caches) key on this generation to avoid a new track colliding with
+  // the previous track's cached state at the same index.
+  private queueGeneration = 0;
   // Serializes mutating queue operations (enqueue, enqueueRadio, clear,
   // shuffle, move, remove). Without this, two concurrent play_* calls
   // interleave their IPC commands and can violate the radio/songs
@@ -305,11 +312,14 @@ class PlaybackEngine {
     try {
       await this.startPromise;
     } finally {
-      // Clear the promise reference once it has settled, so a future spawn
-      // attempt (after a crash, say) is not blocked by a stale promise.
-      if (!this.isRunning()) {
-        this.startPromise = null;
-      }
+      // Unconditionally clear the promise reference once it has settled. The
+      // coalescing role of this field is only needed while the promise is
+      // pending; by the time `finally` runs every concurrent awaiter has
+      // already passed `await this.startPromise`, so clearing it is safe for
+      // concurrent callers and correct for both success and failure. Leaving a
+      // settled promise here after a successful start would make the next call
+      // after an unexpected IPC disconnect no-op instead of reconnecting.
+      this.startPromise = null;
     }
   }
 
@@ -388,6 +398,10 @@ class PlaybackEngine {
       this.currentRadioStation = null;
 
       if (effectiveMode === 'replace') {
+        // New full-replace load: bump the generation so per-position caches in
+        // consumers (e.g. now_playing) don't mistake the incoming track for the
+        // previous one that also occupied position 0.
+        this.queueGeneration++;
         // Replace-mode is a multi-command sequence (clear → loadfile* → unpause)
         // and not atomic on mpv's side. If any loadfile mid-sequence fails
         // (network blip, mpv ENOMEM, transcoder hiccup), the prior queue is
@@ -603,6 +617,9 @@ class PlaybackEngine {
     await this.ensureRunning();
     await this.withMutationLock(async () => {
       const ipc = this.requireIpc();
+      // New full-replace load (radio clobbers the queue): bump the generation so
+      // per-position caches in consumers don't collide with the prior track.
+      this.queueGeneration++;
       await ipc.command('loadfile', streamUrl, 'replace');
       await ipc.command('set_property', 'pause', false);
       this.currentRadioStation = stationName !== undefined && stationName !== ''
@@ -636,6 +653,17 @@ class PlaybackEngine {
    */
   getCurrentRadioStation(): { name: string } | null {
     return this.currentRadioStation;
+  }
+
+  /**
+   * Monotonic counter identifying the current full-replace load. Incremented
+   * whenever the queue is wholly replaced (`enqueue(replace)` / `enqueueRadio`),
+   * so per-position caches can distinguish "same position, new load" from "same
+   * position, same load". Append does not bump it (appended tracks get new,
+   * non-colliding positions).
+   */
+  getQueueGeneration(): number {
+    return this.queueGeneration;
   }
 
   /**

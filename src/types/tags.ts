@@ -49,6 +49,14 @@ export interface TagDistribution {
   mostCommon: TagDTO;
   /** Top values surfaced (sorted by usage), capped at the distribution limit */
   distribution: TagDTO[];
+  /**
+   * True when this distribution is an alphabetical sample rather than a true
+   * top-N by count. Set for tag names other than `genre`, which have no
+   * server-provided counts to sort by (so the surfaced slice is the
+   * alphabetically-first values, then locally re-sorted by count). Absent for
+   * `genre`, which is sorted by song count server-side and is a real top-N.
+   */
+  sampled?: boolean;
 }
 
 /**

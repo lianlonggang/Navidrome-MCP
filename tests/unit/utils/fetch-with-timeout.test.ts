@@ -26,6 +26,7 @@ import {
   MAX_FETCH_TIMEOUT_MS,
   MIN_FETCH_TIMEOUT_MS,
 } from '../../../src/constants/timeouts.js';
+import { logger } from '../../../src/utils/logger.js';
 
 const mockFetch = vi.fn() as MockedFunction<typeof fetch>;
 global.fetch = mockFetch;
@@ -329,6 +330,56 @@ describe('timeout env var resolvers', () => {
 
     process.env['NAVIDROME_REQUEST_TIMEOUT_MS'] = '0';
     expect(getNavidromeRequestTimeoutMs()).toBe(DEFAULT_NAVIDROME_REQUEST_TIMEOUT_MS);
+  });
+
+  // NOTE: the warn-once dedup Set is module-level, so these tests use env
+  // values unique to each case — a value another test already warned about
+  // would be (correctly) deduped and skew the call counts.
+  describe('misconfiguration warn-once dedup', () => {
+    let warnSpy: ReturnType<typeof vi.spyOn>;
+
+    beforeEach(() => {
+      warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => undefined);
+    });
+
+    afterEach(() => {
+      warnSpy.mockRestore();
+    });
+
+    it('warns once per distinct bad value, not once per call', () => {
+      // Bug-fix lock-in: these resolvers run on every request, so pre-fix a
+      // misconfigured env var emitted an identical warning per request for
+      // the process lifetime.
+      process.env['NAVIDROME_REQUEST_TIMEOUT_MS'] = 'dedup-garbage-a';
+      expect(getNavidromeRequestTimeoutMs()).toBe(DEFAULT_NAVIDROME_REQUEST_TIMEOUT_MS);
+      expect(getNavidromeRequestTimeoutMs()).toBe(DEFAULT_NAVIDROME_REQUEST_TIMEOUT_MS);
+      expect(getNavidromeRequestTimeoutMs()).toBe(DEFAULT_NAVIDROME_REQUEST_TIMEOUT_MS);
+      expect(warnSpy).toHaveBeenCalledTimes(1);
+
+      // A DIFFERENT bad value is a new misconfiguration — warn again, once.
+      process.env['NAVIDROME_REQUEST_TIMEOUT_MS'] = 'dedup-garbage-b';
+      expect(getNavidromeRequestTimeoutMs()).toBe(DEFAULT_NAVIDROME_REQUEST_TIMEOUT_MS);
+      expect(getNavidromeRequestTimeoutMs()).toBe(DEFAULT_NAVIDROME_REQUEST_TIMEOUT_MS);
+      expect(warnSpy).toHaveBeenCalledTimes(2);
+    });
+
+    it('keeps recomputing the clamped return value even when the warn is deduped', () => {
+      process.env['NAVIDROME_REQUEST_TIMEOUT_MS'] = '17';
+      expect(getNavidromeRequestTimeoutMs()).toBe(MIN_FETCH_TIMEOUT_MS);
+      expect(getNavidromeRequestTimeoutMs()).toBe(MIN_FETCH_TIMEOUT_MS);
+      expect(warnSpy).toHaveBeenCalledTimes(1);
+    });
+
+    it('dedups the same value independently per env var name', () => {
+      process.env['NAVIDROME_REQUEST_TIMEOUT_MS'] = 'shared-garbage';
+      process.env['EXTERNAL_API_TIMEOUT_MS'] = 'shared-garbage';
+      expect(getNavidromeRequestTimeoutMs()).toBe(DEFAULT_NAVIDROME_REQUEST_TIMEOUT_MS);
+      expect(getExternalApiTimeoutMs()).toBe(DEFAULT_EXTERNAL_API_TIMEOUT_MS);
+      expect(getNavidromeRequestTimeoutMs()).toBe(DEFAULT_NAVIDROME_REQUEST_TIMEOUT_MS);
+      expect(getExternalApiTimeoutMs()).toBe(DEFAULT_EXTERNAL_API_TIMEOUT_MS);
+      // One warn per env-var name, despite the identical raw value.
+      expect(warnSpy).toHaveBeenCalledTimes(2);
+    });
   });
 });
 

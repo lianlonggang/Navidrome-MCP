@@ -4,7 +4,7 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { SetActiveLibrariesSchema } from '../../../src/schemas/validation.js';
+import { SetActiveLibrariesSchema, TopTracksByArtistSchema } from '../../../src/schemas/validation.js';
 
 describe('SetActiveLibrariesSchema', () => {
   it('accepts a normal positive-integer libraryIds array', () => {
@@ -60,5 +60,25 @@ describe('SetActiveLibrariesSchema', () => {
 
   it('rejects mixed valid/invalid IDs', () => {
     expect(() => SetActiveLibrariesSchema.parse({ libraryIds: [1, 'two' as unknown as number, 3] })).toThrow();
+  });
+});
+
+describe('TopTracksByArtistSchema limit contract', () => {
+  // Regression: the default must sit within the declared max. zod's `.default()`
+  // substitutes its value WITHOUT re-running `.max()`, so a default above the max
+  // (previously 100 vs a max of 50) silently returns an out-of-contract value on
+  // the omitted-limit path while the same explicit value would be rejected.
+  it('applies a default of 10 when limit is omitted, within the max', () => {
+    const result = TopTracksByArtistSchema.parse({ artist: 'Radiohead' });
+    expect(result.limit).toBe(10);
+    expect(result.limit).toBeLessThanOrEqual(50);
+  });
+
+  it('accepts a limit at the max boundary (50)', () => {
+    expect(TopTracksByArtistSchema.parse({ artist: 'Radiohead', limit: 50 }).limit).toBe(50);
+  });
+
+  it('rejects a limit above the max (51)', () => {
+    expect(() => TopTracksByArtistSchema.parse({ artist: 'Radiohead', limit: 51 })).toThrow();
   });
 });

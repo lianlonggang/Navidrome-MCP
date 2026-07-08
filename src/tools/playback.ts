@@ -21,6 +21,7 @@ import type { NavidromeClient } from '../client/navidrome-client.js';
 import type { Config } from '../config.js';
 import {
   NonEmptyStringArraySchema,
+  PlaylistIdSchema,
   SearchAlbumsSchema,
   SearchSongsSchema,
 } from '../schemas/common.js';
@@ -201,7 +202,10 @@ interface PlayQueueIndexResult {
 }
 
 const SetVolumeSchema = z.object({
-  level: z.number().min(0).max(100),
+  // Accept any finite number and let the engine clamp to [0, 100]
+  // (playback-engine.setVolume). The tool contract promises clamping, so the
+  // schema must NOT reject out-of-range input — only non-finite values.
+  level: z.number().finite(),
 });
 
 const QueueModeSchema = z.enum(['replace', 'append']).default('replace');
@@ -231,8 +235,7 @@ const PlaySongsSearchSchema = SearchSongsSchema.extend({
 // Exported so the webui route boundary (handlePlayPlaylist) can re-validate the
 // request body up front and return HTTP 400 for malformed input, instead of
 // letting the ZodError flow through runAction as a generic 500.
-export const PlayPlaylistSchema = z.object({
-  playlistId: z.string().min(1, 'Playlist ID is required'),
+export const PlayPlaylistSchema = PlaylistIdSchema.extend({
   mode: QueueModeSchema,
   shuffle: z.boolean().default(false),
 });
@@ -1235,10 +1238,19 @@ function looksLikeHttpUrl(value: string): boolean {
 // Tracks the queue position for which VBR duration repair has already been
 // applied from the cache. Once repaired, `now_playing` polls for that same
 // track skip the per-poll getPlaylist() IPC instead of firing it forever just
-// because a normal sub-10-minute track stays below the 600s threshold. Resets
-// when the queue position changes (next/prev/auto-advance), at which point the
-// new track gets one repair pass.
+// because a normal sub-10-minute track stays below the 600s threshold. The key
+// folds the engine's queue-generation counter with the queue index, so it
+// resets both when the queue position changes (next/prev/auto-advance) AND when
+// a full-replace load lands a new track at the same position (a `mode:'replace'`
+// reload always drops the new track at index 0). Each new track gets one repair
+// pass.
 let durationRepairedForKey: string | null = null;
+// Tracks the (generation, position) key that a getPlaylist() reconciliation
+// confirmed is NOT radio (a real Navidrome songId was present). Without this,
+// `needsRadioFallback` is true for the entire steady state of ordinary playback
+// and forces a getPlaylist() IPC on every poll even when duration/metadata are
+// already fully resolved. Same reset semantics as `durationRepairedForKey`.
+let notRadioConfirmedForKey: string | null = null;
 
 /**
  * Read current playback state from the engine's observed-property cache.
@@ -1324,13 +1336,23 @@ export async function nowPlaying(_args: unknown, client?: NavidromeClient): Prom
       result.isRadio = true;
       result.radioStation = radioStation;
     }
-    const needsRadioFallback = radioStation === null;
-    // Cheap, pre-getPlaylist track identity: the queue position. When repair has
-    // already been applied for the current position, don't re-fire getPlaylist()
-    // every poll just because a normal track's duration stays under 600s. The
-    // key resets automatically when the position changes (track advance/skip).
+    // Cheap, pre-getPlaylist track identity: the queue position folded with the
+    // engine's queue-generation counter. Keying on generation too means a
+    // `mode:'replace'` reload that lands a new track at the same position
+    // (always index 0) gets a fresh key instead of colliding with the previous
+    // track's cached repair/not-radio state. The key resets when the position
+    // changes (track advance/skip) OR when a full-replace load bumps generation.
     const repairKey =
-      typeof queueIndex === 'number' ? `idx:${String(queueIndex)}` : null;
+      typeof queueIndex === 'number'
+        ? `${String(playbackEngine.getQueueGeneration())}:idx:${String(queueIndex)}`
+        : null;
+    // Once a position is confirmed NOT radio (a real songId was seen there),
+    // stop re-firing getPlaylist() for the radio fallback on every poll — this
+    // term would otherwise be true for all ordinary playback and defeat the
+    // duration/metadata caches below.
+    const notRadioConfirmed =
+      repairKey !== null && notRadioConfirmedForKey === repairKey;
+    const needsRadioFallback = radioStation === null && !notRadioConfirmed;
     const alreadyRepaired =
       repairKey !== null && durationRepairedForKey === repairKey;
     const needsDurationRepair =
@@ -1357,6 +1379,12 @@ export async function nowPlaying(_args: unknown, client?: NavidromeClient): Prom
           // Radio fallback (only when session-scoped flag wasn't set)
           if (needsRadioFallback && current.songId === null) {
             result.isRadio = true;
+          }
+          // Confirmed NOT radio at this (generation, position): cache it so
+          // subsequent polls skip the radio-fallback getPlaylist() until the
+          // queue position changes or a full-replace load bumps the generation.
+          if (current.songId !== null && repairKey !== null) {
+            notRadioConfirmedForKey = repairKey;
           }
           // Metadata reconciliation by songId. getPlaylist already merged the
           // engine's per-song cache and sanitized any URL, so current.title/

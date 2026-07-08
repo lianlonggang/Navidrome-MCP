@@ -172,9 +172,12 @@ export async function getPlaylistTracks(client: NavidromeClient, args: unknown):
     );
 
     if (params.format === 'm3u') {
+      if (typeof data !== 'string') {
+        throw new Error('Expected an M3U text body but received a JSON response — the server did not honor the audio/x-mpegurl Accept header for the M3U export.');
+      }
       return {
         format: 'm3u',
-        m3uContent: typeof data === 'string' ? data : '',
+        m3uContent: data,
       };
     }
 

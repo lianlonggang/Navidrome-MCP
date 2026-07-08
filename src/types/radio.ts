@@ -157,6 +157,13 @@ export interface RadioFiltersResponse {
     name: string;
     stationCount: number;
   }>;
+  /**
+   * Names of requested `kinds` whose fetch failed while at least one other
+   * kind succeeded. Absent means every requested kind returned successfully.
+   * Lets a caller distinguish "not requested" from "fetch errored" — a missing
+   * category is otherwise indistinguishable from an empty available-options set.
+   */
+  partialFailures?: string[];
 }
 
 /**

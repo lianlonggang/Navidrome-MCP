@@ -12,6 +12,20 @@ import type { Config } from '../../../src/config.js';
 import { createMockClient, type MockNavidromeClient } from '../../factories/mock-client.js';
 import type { NavidromeClient } from '../../../src/client/navidrome-client.js';
 
+// Station validation now flows through network-safety's safeFetch (a peer-IP
+// gated dispatcher). Route it to whatever global.fetch mock each test installs
+// so the existing interleaved search+validation sequences keep working and no
+// real network is hit; safeFetch's real dispatcher behavior is covered in
+// tests/unit/utils/network-safety.test.ts. Keep the module's other exports real.
+vi.mock('../../../src/utils/network-safety.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../../src/utils/network-safety.js')>();
+  return {
+    ...actual,
+    safeFetch: (...args: unknown[]) =>
+      (globalThis.fetch as (...a: unknown[]) => unknown)(...args),
+  };
+});
+
 // ---- helpers ----------------------------------------------------------------
 
 function makeConfig(overrides: Partial<Config> = {}): Config {
@@ -274,6 +288,57 @@ describe('getRadioFilters', () => {
 
     const { getRadioFilters } = await import('../../../src/tools/radio-discovery.js');
     await expect(getRadioFilters(makeConfig(), {})).rejects.toThrow();
+  });
+
+  it('reports a failed kind in partialFailures while still returning the others', async () => {
+    // Fetches are issued in kinds order: tags → countries → languages → codecs.
+    // Fail only the languages fetch; the other three succeed.
+    global.fetch = vi.fn()
+      .mockResolvedValueOnce({
+        ok: true, status: 200,
+        json: () => Promise.resolve([{ name: 'rock', stationcount: 5000 }]),
+        headers: new Headers(),
+      } as unknown as Response)
+      .mockResolvedValueOnce({
+        ok: true, status: 200,
+        json: () => Promise.resolve([{ name: 'United States', iso_3166_1: 'US', stationcount: 8000 }]),
+        headers: new Headers(),
+      } as unknown as Response)
+      .mockResolvedValueOnce({
+        ok: false, status: 500, statusText: 'Internal Server Error',
+        json: () => Promise.resolve(null),
+        text: () => Promise.resolve(''),
+        headers: new Headers(),
+      } as unknown as Response)
+      .mockResolvedValueOnce({
+        ok: true, status: 200,
+        json: () => Promise.resolve([{ name: 'MP3', stationcount: 20000 }]),
+        headers: new Headers(),
+      } as unknown as Response);
+
+    const { getRadioFilters } = await import('../../../src/tools/radio-discovery.js');
+    const result = await getRadioFilters(makeConfig(), {});
+
+    // Successful kinds are present; the failed one is absent, and its name is
+    // surfaced in partialFailures so the caller can tell "errored" from "empty".
+    expect(Array.isArray(result.tags)).toBe(true);
+    expect(Array.isArray(result.countries)).toBe(true);
+    expect(Array.isArray(result.codecs)).toBe(true);
+    expect(result.languages).toBeUndefined();
+    expect(result.partialFailures).toEqual(['languages']);
+  });
+
+  it('omits partialFailures when every requested kind succeeds', async () => {
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: true, status: 200,
+      json: () => Promise.resolve([{ name: 'MP3', stationcount: 1000 }]),
+      headers: new Headers(),
+    } as unknown as Response);
+
+    const { getRadioFilters } = await import('../../../src/tools/radio-discovery.js');
+    const result = await getRadioFilters(makeConfig(), { kinds: ['codecs'] });
+
+    expect(result.partialFailures).toBeUndefined();
   });
 });
 

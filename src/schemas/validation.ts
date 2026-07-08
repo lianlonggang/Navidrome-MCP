@@ -22,12 +22,10 @@ import {
   EnhancedSearchSchema,
   ItemTypeSchema,
   RatingSchema,
-  UrlSchema,
   StringArraySchema,
   OptionalBooleanSchema,
   VerboseSchema,
   createLimitSchema,
-  createTimeoutSchema,
   ID_PATTERN,
 } from './common.js';
 
@@ -82,7 +80,7 @@ export const AddTracksToPlaylistSchema = z.object({
 
 export const RemoveTracksFromPlaylistSchema = z.object({
   playlistId: z.string().min(1, 'Playlist ID is required').regex(ID_PATTERN, 'Playlist ID contains invalid characters'),
-  trackIds: z.array(z.string().min(1).regex(ID_PATTERN, 'Track ID contains invalid characters')).min(1, 'At least one item is required'),
+  trackIds: z.array(z.string().min(1).regex(ID_PATTERN, 'Track ID contains invalid characters')).min(1, 'At least one item is required').max(500, 'Remove at most 500 tracks per call; repeat for more.'),
 });
 
 // Navidrome's reorder endpoint uses 1-based position IDs (the same IDs returned
@@ -149,18 +147,6 @@ export const TagDistributionSchema = z.object({
   distributionLimit: createLimitSchema(1, 100, DEFAULT_VALUES.TAG_DISTRIBUTION_VALUES_LIMIT),
 });
 
-export const UniqueTagsSchema = z.object({
-  limit: createLimitSchema(1, 100, DEFAULT_VALUES.UNIQUE_TAGS_LIMIT),
-  minUsage: z.number().min(1).optional().default(1),
-});
-
-// Radio validation schemas
-export const ValidateRadioStreamSchema = z.object({
-  url: UrlSchema,
-  timeout: createTimeoutSchema(1000, 30000, 8000),
-  followRedirects: OptionalBooleanSchema.default(true),
-});
-
 // Last.fm validation schemas
 export const SimilarArtistsSchema = z.object({
   artist: z.string().min(1),
@@ -180,7 +166,7 @@ export const ArtistInfoSchema = z.object({
 
 export const TopTracksByArtistSchema = z.object({
   artist: z.string().min(1),
-  limit: createLimitSchema(1, 50, DEFAULT_VALUES.TOP_TRACKS_BY_ARTIST_LIMIT),
+  limit: createLimitSchema(1, 50, 10),
 });
 
 export const TrendingMusicSchema = z.object({

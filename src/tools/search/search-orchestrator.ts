@@ -61,6 +61,15 @@ export async function searchAll(client: NavidromeClient, _config: Config, args: 
     // Processing - resolve text-based filters to IDs (may refresh from Navidrome when cache is disabled)
     const { resolvedFilters, appliedFilters } = await resolveTextFilters(params);
 
+    // resolveTextFilters only reports the tag/genre filters; year/starred are
+    // applied to the sub-fetches (buildContentTypeParams) but not reported, so
+    // fold them into the display map here using the keys the aggregator's
+    // stripUnsupportedFilters recognizes (`year` is dropped for the artist slice;
+    // `starred` is kept for all three). appliedFilters is a fresh Record, so
+    // mutating it is safe.
+    if (params.year !== undefined) appliedFilters['year'] = String(params.year);
+    if (params.starred !== undefined) appliedFilters['starred'] = String(params.starred);
+
     // Build enhanced query parameters for each content type. Same offset
     // applied to all 3 types — see SearchAllSchema for rationale.
     const contentTypeParams = buildContentTypeParams({

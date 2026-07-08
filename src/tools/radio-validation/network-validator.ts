@@ -17,7 +17,7 @@
  */
 
 import { RADIO_VALIDATION } from '../../constants/timeouts.js';
-import { hostResolvesToPrivateIp, isHttpUrlScheme } from '../../utils/network-safety.js';
+import { hostResolvesToPrivateIp, isHttpUrlScheme, safeFetch } from '../../utils/network-safety.js';
 
 // Validation context for internal use
 export interface ValidationContext {
@@ -44,13 +44,18 @@ interface FetchWithRedirectsResult {
  * Why manual: native `redirect: 'follow'` chases redirects opaquely, so a
  * public-looking URL that 302s to http://localhost:4533/api/admin would
  * silently land on a localhost endpoint and surface its status / final URL
- * back through the validator's response. Following manually lets us check
- * each Location's resolved IP before requesting it.
+ * back through the validator's response. Following manually lets us reject
+ * each hop with a specific, useful message before requesting it.
  *
- * The initial URL itself is NOT IP-checked — it was supplied by the caller
- * and the validator's response surface is narrow enough that probing a
- * known localhost URL is no worse than the LLM running curl directly. The
- * surprise-bypass case is only reachable through redirects.
+ * Every request here goes through `safeFetch`, whose dispatcher refuses any
+ * connection whose actual peer IP is private/local — covering the initial URL
+ * AND every redirect hop, and closing the DNS-rebinding TOCTOU that the
+ * per-hop `hostResolvesToPrivateIp` pre-check below cannot (that pre-check
+ * remains only for its clearer error message; the dispatcher is the real
+ * enforcement). Note this now also gates the initial URL — `discover` feeds
+ * untrusted Radio Browser URLs straight in, so any private/LAN initial URL
+ * (loopback, RFC1918, link-local incl. the cloud metadata IP) is refused
+ * rather than probed — not just localhost.
  */
 async function fetchWithManualRedirects(
   initialUrl: string,
@@ -60,7 +65,7 @@ async function fetchWithManualRedirects(
   let currentUrl = initialUrl;
 
   for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
-    const response = await fetch(currentUrl, { ...init, redirect: 'manual' });
+    const response = await safeFetch(currentUrl, { ...init, redirect: 'manual' });
 
     const isRedirect = response.status >= 300 && response.status < 400;
     if (!isRedirect || !followRedirects) {
@@ -71,6 +76,13 @@ async function fetchWithManualRedirects(
     if (location === null || location === '') {
       // 3xx with no Location — return as-is, treat like the terminal response.
       return { response, finalUrl: currentUrl, error: null };
+    }
+
+    // This 3xx response is discarded from here on (whether the redirect is
+    // followed or refused). Cancel its body so undici returns the socket to the
+    // keep-alive pool immediately instead of waiting on GC. Null for HEAD.
+    if (response.body) {
+      await response.body.cancel().catch(() => { /* body already released */ });
     }
 
     let nextUrl: URL;
@@ -195,6 +207,11 @@ export async function sampleAudioData(
 
       const response = result.response;
       if (!response.ok && response.status !== 206) {
+        // Error responses (404/500 etc.) can carry a body we never read; cancel
+        // it so the socket returns to the pool without waiting on GC.
+        if (response.body) {
+          await response.body.cancel().catch(() => { /* body already released */ });
+        }
         return {
           buffer: null,
           headers: response.headers,

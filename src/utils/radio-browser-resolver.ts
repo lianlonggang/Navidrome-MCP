@@ -120,7 +120,7 @@ export async function getRadioBrowserBase(override?: string): Promise<string> {
   // bumps it mid-flight, the writes below become no-ops so we don't re-cache a
   // mirror that was just invalidated.
   const gen = cacheGeneration;
-  inflight = resolveBaseFromSrv()
+  const resolution = resolveBaseFromSrv()
     .then((base) => {
       if (gen === cacheGeneration) {
         cached = { base, expiresAt: Date.now() + CACHE_TTL_MS };
@@ -139,10 +139,17 @@ export async function getRadioBrowserBase(override?: string): Promise<string> {
       return RADIO_BROWSER_FALLBACK_BASE;
     })
     .finally(() => {
-      inflight = null;
+      // Only clear the shared var when it still points at THIS chain. An
+      // invalidation (invalidateRadioBrowserBase) may have nulled it and a
+      // newer call started its own resolution; nulling unconditionally would
+      // clobber that newer inflight and defeat the dedup during a retry storm.
+      if (inflight === resolution) {
+        inflight = null;
+      }
     });
+  inflight = resolution;
 
-  return inflight;
+  return resolution;
 }
 
 async function resolveBaseFromSrv(): Promise<string> {

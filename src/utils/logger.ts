@@ -18,8 +18,10 @@
 
 import { sanitizeFilename } from './sanitize-url.js';
 
-// Strings larger than this are truncated before regex passes to avoid O(n)
-// backtracking on megabyte-scale blobs. 50KB is generous for any realistic
+// Strings larger than this are truncated BEFORE the regex passes run, which
+// bounds the regex work on megabyte-scale blobs. The passes still run on the
+// retained slice — truncation alone is not redaction, and a secret in the
+// first 50KB must never reach stderr. 50KB is generous for any realistic
 // log argument (stack traces, JSON payloads, config dumps).
 const MAX_REDACT_STRING_BYTES = 50_000;
 
@@ -52,8 +54,14 @@ const RE_URL_USERINFO = /(https?:\/\/)[^/\s@]*:[^/\s@]*@/gi;
 
 // 4. JWT-shaped tokens — three base64url segments (≥20 chars each).
 // Deliberately loose to catch raw tokens not labelled as Authorization.
+// The negative lookbehind anchors match attempts to the START of a base64url
+// run: interior positions fail in O(1), where the unanchored pattern re-scanned
+// the rest of the run from every offset — quadratic (~5s at 50KB) on long
+// dot-free blobs (base64 bodies, hex dumps). Matching is unchanged: any match
+// starting mid-run implies one at the run's start, which leftmost-first
+// matching already preferred.
 const RE_JWT =
-  /[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}/g;
+  /(?<![A-Za-z0-9_-])[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}/g;
 
 // 5. API key / token / secret in env-var or JSON style:
 //    api_key=abc123   api-key: "abc123"   secret: 'xyz'   apiToken=...
@@ -82,15 +90,15 @@ const RE_SENSITIVE_KEY =
 
 /**
  * Apply all credential-redaction regex passes to a single string.
- * If the string exceeds MAX_REDACT_STRING_BYTES it is truncated and tagged
- * so callers know it was cut (prevents runaway backtracking).
+ * Strings exceeding MAX_REDACT_STRING_BYTES are truncated FIRST and the
+ * passes then run on the retained slice — the early-return that skipped
+ * redaction for oversized strings leaked any secret in the retained prefix.
+ * The [TRUNCATED_BY_LOGGER] tag is appended after redaction so callers still
+ * know the string was cut.
  */
 function redactString(s: string): string {
-  if (s.length > MAX_REDACT_STRING_BYTES) {
-    return `${s.slice(0, MAX_REDACT_STRING_BYTES)} [TRUNCATED_BY_LOGGER]`;
-  }
-
-  let out = s;
+  const truncated = s.length > MAX_REDACT_STRING_BYTES;
+  let out = truncated ? s.slice(0, MAX_REDACT_STRING_BYTES) : s;
 
   // Bearer tokens — serialized header form (e.g. "Authorization: Bearer <token>")
   out = out.replace(RE_BEARER_HEADER, '$1: Bearer <REDACTED>');
@@ -137,7 +145,7 @@ function redactString(s: string): string {
     out = sanitizeFilename(out);
   }
 
-  return out;
+  return truncated ? `${out} [TRUNCATED_BY_LOGGER]` : out;
 }
 
 /**
@@ -145,6 +153,7 @@ function redactString(s: string): string {
  * stderr. Handles:
  * - strings (regex passes)
  * - Error objects (.message, .stack, .cause)
+ * - Date / RegExp / binary views (rendered as compact scalars)
  * - plain objects (depth-limited key-by-key walk)
  * - arrays (per-element walk)
  * - primitives (returned unchanged)
@@ -188,6 +197,22 @@ export function redact(value: unknown, depth: number = 0): unknown {
   // Arrays — recurse per element
   if (Array.isArray(value)) {
     return value.map(item => redact(item, depth + 1));
+  }
+
+  // Built-ins the generic walk below would mangle: Date and RegExp have no
+  // own enumerable properties (they'd become a useless `{}`), and binary
+  // views would explode into one numeric key per byte. Render each as a
+  // compact scalar instead.
+  if (value instanceof Date) {
+    // toISOString() throws RangeError on invalid dates — the logger must
+    // never throw, least of all from inside a catch block logging an error.
+    return Number.isNaN(value.getTime()) ? 'Invalid Date' : value.toISOString();
+  }
+  if (value instanceof RegExp) {
+    return value.toString();
+  }
+  if (ArrayBuffer.isView(value)) {
+    return `<binary ${value.byteLength} bytes>`;
   }
 
   // Plain objects — walk keys

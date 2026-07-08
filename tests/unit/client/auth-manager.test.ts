@@ -112,6 +112,16 @@ describe('AuthManager', () => {
     expect(await auth.getToken()).toBe('recovered');
   });
 
+  it('throws an auth-context error (not a native TypeError) on a literal null JSON body', async () => {
+    // A 200 OK body of literal `null` parses successfully but is not an object.
+    // The shape guard must reject with auth context instead of letting the next
+    // `.token` read throw a native "Cannot read properties of null" TypeError.
+    mockFetch.mockResolvedValueOnce(jsonResponse(null));
+    const auth = new AuthManager(makeConfig());
+
+    await expect(auth.getToken()).rejects.toThrow(/Authentication failed: unexpected \/auth\/login response shape/);
+  });
+
   it('concurrent callers all see the same failure when authenticate fails', async () => {
     mockFetch.mockResolvedValueOnce(jsonResponse({ message: 'down' }, 500));
     const auth = new AuthManager(makeConfig());

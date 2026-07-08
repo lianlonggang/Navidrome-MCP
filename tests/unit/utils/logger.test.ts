@@ -379,6 +379,92 @@ describe('redact()', () => {
   });
 
   // -------------------------------------------------------------------------
+  // 11. Oversized strings — truncation must not bypass redaction
+  // -------------------------------------------------------------------------
+  describe('oversized string redaction (truncate-then-redact)', () => {
+    it('redacts a password embedded near the front of a >50KB string', () => {
+      // Bug-fix lock-in: pre-fix, oversized strings returned truncated but
+      // UNREDACTED — a secret in the retained 50KB prefix reached stderr.
+      const input = `password: "hugedumpsecret42" ${'x'.repeat(60_000)}`;
+      const result = redact(input) as string;
+      expect(result).not.toContain('hugedumpsecret42');
+      expect(result).toContain('<REDACTED>');
+      expect(result.endsWith(' [TRUNCATED_BY_LOGGER]')).toBe(true);
+    });
+
+    it('redacts a Bearer token near the front of a >50KB string', () => {
+      const input = `Authorization: Bearer bigblobtoken12345 ${'y'.repeat(60_000)}`;
+      const result = redact(input) as string;
+      expect(result).not.toContain('bigblobtoken12345');
+      expect(result).toContain('Bearer <REDACTED>');
+      expect(result.endsWith(' [TRUNCATED_BY_LOGGER]')).toBe(true);
+    });
+
+    it('does not tag strings at or under the size limit', () => {
+      const input = 'z'.repeat(50_000);
+      expect(redact(input)).toBe(input);
+    });
+
+    it('completes quickly on a large dot-free base64url blob (JWT-pass ReDoS guard)', () => {
+      // Regression: the unanchored JWT pass was quadratic on long
+      // [A-Za-z0-9_-] runs without dots (~5s at 50KB). The lookbehind anchor
+      // keeps it linear — generous 1s bound still catches the pathology.
+      const blob = 'A'.repeat(60_000);
+      const start = performance.now();
+      const result = redact(blob) as string;
+      const elapsed = performance.now() - start;
+      expect(result.endsWith(' [TRUNCATED_BY_LOGGER]')).toBe(true);
+      expect(elapsed).toBeLessThan(1000);
+    });
+
+    it('still redacts a JWT mid-string after the lookbehind anchoring', () => {
+      const jwt = `${'a'.repeat(25)}.${'b'.repeat(25)}.${'c'.repeat(25)}`;
+      const result = redact(`token value ${jwt} was rejected`) as string;
+      expect(result).not.toContain(jwt);
+      expect(result).toContain('<JWT_REDACTED>');
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // 12. Built-in object rendering (Date / RegExp / binary views)
+  // -------------------------------------------------------------------------
+  describe('built-in object rendering', () => {
+    it('renders a valid Date as its ISO string instead of {}', () => {
+      expect(redact(new Date('2026-07-08T12:00:00.000Z'))).toBe('2026-07-08T12:00:00.000Z');
+    });
+
+    it('renders an invalid Date as "Invalid Date" without throwing', () => {
+      // toISOString() throws RangeError on invalid dates; the logger's
+      // "never throws" contract must hold for any input.
+      expect(() => redact(new Date('not-a-date'))).not.toThrow();
+      expect(redact(new Date('not-a-date'))).toBe('Invalid Date');
+    });
+
+    it('renders nested and array-held invalid Dates without throwing', () => {
+      expect(() => redact({ nested: { when: new Date('garbage') } })).not.toThrow();
+      expect(() => redact([1, 2, new Date('also garbage')])).not.toThrow();
+      const result = redact({ nested: { when: new Date('garbage') } }) as {
+        nested: { when: string };
+      };
+      expect(result.nested.when).toBe('Invalid Date');
+    });
+
+    it('renders a RegExp as its source string instead of {}', () => {
+      const result = redact({ pattern: /abc+/gi }) as { pattern: string };
+      expect(result.pattern).toBe('/abc+/gi');
+    });
+
+    it('renders typed arrays compactly instead of per-byte keys', () => {
+      const result = redact({ buf: new Uint8Array(1024) }) as { buf: string };
+      expect(result.buf).toBe('<binary 1024 bytes>');
+    });
+
+    it('renders Node Buffers compactly', () => {
+      expect(redact(Buffer.from('hello'))).toBe('<binary 5 bytes>');
+    });
+  });
+
+  // -------------------------------------------------------------------------
   // Negative cases — normal data must NOT be altered
   // -------------------------------------------------------------------------
   describe('negative cases (normal data unchanged)', () => {

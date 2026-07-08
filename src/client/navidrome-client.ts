@@ -87,6 +87,9 @@ export class NavidromeClient {
       // through to parseResponse which throws the standard HTTP error.
       logger.debug('Got 401 from Navidrome; invalidating token and retrying once');
       this.authManager.invalidate();
+      // Drain the discarded 401 body so undici can return the socket to the
+      // keep-alive pool immediately instead of holding it until GC.
+      await response.body?.cancel();
       response = await this.doFetch(endpoint, options);
     }
     // Read X-Total-Count alongside the body. Header / body streams are
@@ -120,6 +123,10 @@ export class NavidromeClient {
     endpoint: string,
     options: RequestInit = {},
   ): Promise<{ data: T; total: number | null }> {
+    // Validate the RAW endpoint before buildLibraryFilteredEndpoint runs it
+    // through `new URL()`, which collapses `..`/`%2e%2e` dot-segments and would
+    // otherwise hide traversal from requestWithMeta's downstream guard.
+    this.assertSafeEndpoint(endpoint);
     const filteredEndpoint = this.buildLibraryFilteredEndpoint(endpoint);
     logger.debug(`Request with library filter: ${filteredEndpoint}`);
     return this.requestWithMeta<T>(filteredEndpoint, options);
@@ -202,18 +209,26 @@ export class NavidromeClient {
       throw new Error(ErrorFormatter.subsonicApi(response));
     }
 
-    let data: { 'subsonic-response'?: { status?: string; error?: { message?: string } } };
+    let data: unknown;
     try {
-      data = await response.json() as { 'subsonic-response'?: { status?: string; error?: { message?: string } } };
+      data = await response.json();
     } catch {
       throw new Error(ErrorFormatter.subsonicResponse('invalid JSON in Subsonic response'));
     }
 
-    if (data['subsonic-response']?.status !== 'ok') {
-      throw new Error(ErrorFormatter.subsonicResponse(data['subsonic-response']?.error?.message));
+    if (data === null || typeof data !== 'object') {
+      // 200 OK but the body was a non-object (literal `null`, etc.) from a
+      // misbehaving proxy — guard before indexing so the failure carries
+      // Subsonic context instead of a native TypeError.
+      throw new Error(ErrorFormatter.subsonicResponse('unexpected Subsonic response shape'));
     }
 
-    return data['subsonic-response'];
+    const body = (data as { 'subsonic-response'?: { status?: string; error?: { message?: string } } })['subsonic-response'];
+    if (body?.status !== 'ok') {
+      throw new Error(ErrorFormatter.subsonicResponse(body?.error?.message));
+    }
+
+    return body;
   }
 
   /**

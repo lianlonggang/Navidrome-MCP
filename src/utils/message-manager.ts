@@ -17,8 +17,14 @@
  */
 
 /**
- * Manages one-time messages for LLM assistants
- * Ensures tips, reminders, and helpful messages are shown only once per session
+ * Manages one-time messages for LLM assistants.
+ *
+ * State is a process-wide singleton (see getInstance), so tips, reminders, and
+ * helpful messages are shown only once per process. Under the stdio transport
+ * that is one process per client session, so it reads as "once per session".
+ * Under the multi-session HTTP transport all concurrent sessions share this
+ * state, so once any session consumes a tip no other session in that process
+ * sees it — accepted trade-off (a helper tip not repeating is cosmetic).
  */
 export class MessageManager {
   private static instance: MessageManager | null = null;

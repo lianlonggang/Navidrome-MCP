@@ -38,7 +38,11 @@ export const HEALTH_APP_ID = 'navidrome-mcp-web';
  * gate never interferes with coexistence.
  */
 export function handleHealth(req: IncomingMessage, res: ServerResponse, config: Config): void {
-  if (config.webui.expose && !isLoopbackPeer(req)) {
+  // LAN-reachability matches network-info.ts and main.ts's logBanner: either an
+  // explicit expose, or a wildcard bind (`0.0.0.0`) that reaches the LAN even with
+  // expose=false. Gate /healthz to loopback peers in either case so the version
+  // fingerprint never leaks off-box.
+  if ((config.webui.expose || config.webui.host === '0.0.0.0') && !isLoopbackPeer(req)) {
     writeError(res, 404, 'Not found');
     return;
   }

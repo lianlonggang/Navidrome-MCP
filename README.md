@@ -235,6 +235,13 @@ In HTTP mode the server also exposes an unauthenticated liveness endpoint at
 `GET /healthz` (returns `200 {"status":"ok"}`) for container/orchestrator health
 checks — it reports only that the HTTP server is up, and performs no Navidrome call.
 
+> **Single-account, shared state:** every HTTP session is served by one process
+> that holds a single authenticated Navidrome account, and the active-library
+> selection is process-global. A `set_active_libraries` call therefore changes the
+> library filter for **all** connected sessions' subsequent search/list calls, and
+> `get_user_details` reflects that shared selection — there is no per-session
+> library scoping under the HTTP transport.
+
 The transport can also be configured entirely through environment variables:
 `MCP_TRANSPORT` (`stdio`|`http`), `MCP_HTTP_HOST`, `MCP_HTTP_PORT`, `MCP_HTTP_EXPOSE`
 (`true` to bind all interfaces), `MCP_HTTP_AUTH_TOKEN`, and `MCP_HTTP_ALLOWED_HOSTS` /

@@ -188,6 +188,18 @@ export function spawnMpv(binaryPath: string, ipcPath: string): ChildProcess {
   attachLineLogger(child.stdout, 'mpv:stdout');
   attachLineLogger(child.stderr, 'mpv:stderr');
 
+  // Unref the piped debug-log streams. child.unref() above only unrefs the
+  // ChildProcess handle; the stdout/stderr pipes are separate libuv handles
+  // that a 'data' listener puts into flowing/ref'd mode, which would hold the
+  // event loop open at shutdown (defeating registerSignalHandlers' no-exit
+  // drain). Data still flows to the attached listeners while the loop stays
+  // alive for other reasons (the MCP stdin hold), so debug logging is intact.
+  // The piped streams are libuv pipe handles that expose unref() at runtime,
+  // but the ChildProcess types only surface them as Readable — narrow to the
+  // unref-bearing shape.
+  (child.stdout as { unref?: () => void }).unref?.();
+  (child.stderr as { unref?: () => void }).unref?.();
+
   child.on('exit', (code, signal) => {
     logger.debug(`mpv process exited code=${code ?? 'null'} signal=${signal ?? 'null'}`);
   });
@@ -241,5 +253,12 @@ function attachLineLogger(stream: NodeJS.ReadableStream | null, prefix: string):
       logger.debug(`[${prefix}] ${buffer}`);
       buffer = '';
     }
+  });
+  // mpv is an external subprocess; a pipe read error (EPIPE/ECONNRESET/EIO,
+  // more plausible on the Windows named-pipe path) emitted with no 'error'
+  // listener would throw and crash the MCP server. Mirror the socket 'error'
+  // guard in mpv-ipc.ts.
+  stream.on('error', (err: Error) => {
+    logger.error(`[${prefix}] stream error:`, err.message);
   });
 }

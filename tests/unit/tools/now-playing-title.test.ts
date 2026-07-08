@@ -35,6 +35,7 @@ const ensureAttachedMock = vi.fn().mockResolvedValue(undefined);
 const getStatusMock = vi.fn();
 const getCachedPropertyMock = vi.fn();
 const getCurrentRadioStationMock = vi.fn();
+const getQueueGenerationMock = vi.fn();
 const getPlaylistMock = vi.fn();
 const ingestQueueMetadataMock = vi.fn();
 
@@ -44,6 +45,7 @@ vi.mock('../../../src/services/playback/playback-engine.js', () => ({
     getStatus: getStatusMock,
     getCachedProperty: getCachedPropertyMock,
     getCurrentRadioStation: getCurrentRadioStationMock,
+    getQueueGeneration: getQueueGenerationMock,
     getPlaylist: getPlaylistMock,
     ingestQueueMetadata: ingestQueueMetadataMock,
   },
@@ -61,6 +63,7 @@ describe('now_playing title reconciliation (Issue #3)', () => {
     vi.clearAllMocks();
     getStatusMock.mockReturnValue({ engineRunning: true });
     getCurrentRadioStationMock.mockReturnValue(null);
+    getQueueGenerationMock.mockReturnValue(0);
   });
 
   it('suppresses a URL-shaped media-title and reconciles the real title by songId', async () => {

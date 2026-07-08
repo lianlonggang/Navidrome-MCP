@@ -82,6 +82,7 @@ export class SseBroadcaster {
   private readonly clients = new Set<ServerResponse>();
   private lastBroadcastMs = 0;
   private pendingBroadcastTimer: NodeJS.Timeout | null = null;
+  private heartbeatTimer: NodeJS.Timeout | null = null;
   private unsubscribe: (() => void) | null = null;
 
   constructor(private readonly client: NavidromeClient) {}
@@ -89,6 +90,19 @@ export class SseBroadcaster {
   start(): void {
     if (this.unsubscribe !== null) return;
     this.unsubscribe = playbackEngine.onStateChange((evt) => this.handleEvent(evt));
+    // Liveness reaping. A peer that vanishes without a clean TCP FIN/RST
+    // (phone sleep, Wi-Fi handoff, NAT timeout — routine for a media-control
+    // UI used from a phone) never fires the 'close' handler, so its
+    // ServerResponse would sit in `clients` for the process lifetime. On each
+    // tick `sendHeartbeat` drops any response Node has locally marked dead
+    // (`res.destroyed`/`res.writableEnded` — a peer RST flips `destroyed`) and
+    // writes a comment ping to the rest to keep proxies from idling the stream
+    // out. A truly silent NAT timeout only becomes reapable once the OS TCP
+    // stack gives up and destroys the socket — a TCP-level heartbeat can't beat
+    // that without an app-level ack. Unref'd so it never keeps the process
+    // alive on its own.
+    this.heartbeatTimer = setInterval(() => { this.sendHeartbeat(); }, SSE_RETRY_MS);
+    this.heartbeatTimer.unref();
   }
 
   stop(): void {
@@ -100,10 +114,40 @@ export class SseBroadcaster {
       clearTimeout(this.pendingBroadcastTimer);
       this.pendingBroadcastTimer = null;
     }
+    if (this.heartbeatTimer !== null) {
+      clearInterval(this.heartbeatTimer);
+      this.heartbeatTimer = null;
+    }
     for (const res of this.clients) {
       try { res.end(); } catch { /* client already gone */ }
     }
     this.clients.clear();
+  }
+
+  /**
+   * Reap dead clients and ping the live ones. `res.write()` does NOT throw
+   * synchronously when a peer's socket is gone — Node reports that by flipping
+   * `res.destroyed` (peer RST / local destroy) or `res.writableEnded` (local
+   * end), so liveness is read from those flags, not inferred from a caught
+   * exception. Runs even while playback is idle, so it's the reaper for peers
+   * that never fire a 'close' event; the try/catch only guards against exotic
+   * synchronous write errors (e.g. a non-string chunk).
+   */
+  private sendHeartbeat(): void {
+    for (const res of this.clients) {
+      if (res.destroyed || res.writableEnded) {
+        this.clients.delete(res);
+        continue;
+      }
+      try {
+        res.write(': ping\n\n');
+      } catch (err) {
+        this.clients.delete(res);
+        logger.debug(
+          `webui: SSE heartbeat failed, dropping client: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    }
   }
 
   /**
@@ -183,20 +227,29 @@ export class SseBroadcaster {
     const snapshot = await this.buildSnapshot();
     if (snapshot === null) return;
     for (const res of this.clients) {
-      this.writeToClient(res, snapshot);
+      if (!this.writeToClient(res, snapshot)) this.clients.delete(res);
     }
   }
 
-  private writeToClient(res: ServerResponse, snapshotJson: string): void {
+  /** Returns false if the write failed (dead pipe) so the caller can reap it. */
+  private writeToClient(res: ServerResponse, snapshotJson: string): boolean {
+    // A peer that reset its socket doesn't make res.write() throw — Node
+    // flips res.destroyed / res.writableEnded instead. Check before (skip a
+    // known-dead pipe) and after (a mid-write reset) the write so a broken
+    // pipe is reaped this pass rather than waiting on a 'close' that may
+    // never fire for a silently-dead peer.
+    if (res.destroyed || res.writableEnded) return false;
     try {
       res.write(`event: snapshot\ndata: ${snapshotJson}\n\n`);
+      return !res.destroyed;
     } catch (err) {
-      // Pipe broken or client gone. The 'close' handler will clean up the
-      // entry from the active set; here we just suppress the throw so other
-      // clients still get their event.
+      // Pipe broken or client gone. Report failure so the broadcast loop
+      // drops the entry from the active set immediately rather than waiting
+      // on a 'close' event that may never fire for a silently-dead peer.
       logger.debug(
         `webui: SSE write failed: ${err instanceof Error ? err.message : String(err)}`,
       );
+      return false;
     }
   }
 

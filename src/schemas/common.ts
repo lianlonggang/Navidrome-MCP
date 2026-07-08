@@ -90,12 +90,8 @@ export const OffsetSchema = z.number().int().min(0).optional().default(0);
 // Order enum
 export const OrderSchema = z.enum(['ASC', 'DESC']).optional().default('ASC');
 
-// Common sort fields (can be extended per tool)
-export const SortSchema = z.string().optional().default('name');
-
 // Boolean flag schema
 export const OptionalBooleanSchema = z.boolean().optional();
-export const RequiredBooleanSchema = z.boolean();
 
 // Verbosity flag for list/search tools. Default false = compact: tools return
 // only identity fields per item (ids, title/name, artist, album, duration) to
@@ -193,4 +189,3 @@ export const PlaylistIdSchema = createIdSchema('Playlist', 'playlistId');
 export const SongIdSchema = createIdSchema('Song', 'songId');
 export const ArtistIdSchema = createIdSchema('Artist', 'artistId');
 export const AlbumIdSchema = createIdSchema('Album', 'albumId');
-export const TagIdSchema = createIdSchema('Tag');

@@ -584,6 +584,47 @@ describe('Playlist Operations - Tier 1 Critical Tests', () => {
 
         expect(result.message).toBe('Removed 1 track from playlist');
       });
+
+      it('should reject more than 500 trackIds per call (proxy URL-length cap)', async () => {
+        const tooMany = Array.from({ length: 501 }, (_, i) => String(i + 1));
+
+        await expect(
+          removeTracksFromPlaylist(mockClient, {
+            playlistId: 'playlist-123',
+            trackIds: tooMany,
+          }),
+        ).rejects.toThrow(/500 tracks per call/);
+
+        // Rejected at the schema before any DELETE is issued.
+        expect(mockClient.request).not.toHaveBeenCalled();
+      });
+    });
+
+    describe('getPlaylistTracks (M3U export)', () => {
+      it('should return the M3U body verbatim when the server honors the Accept header', async () => {
+        const m3u = '#EXTM3U\n#EXTINF:180,Artist - Title\nhttp://example/stream';
+        mockClient.requestWithMeta.mockResolvedValue({ data: m3u, total: null });
+
+        const result = await getPlaylistTracks(mockClient, {
+          playlistId: 'playlist-123',
+          format: 'm3u',
+        });
+
+        expect(result).toEqual({ format: 'm3u', m3uContent: m3u });
+      });
+
+      it('should throw (not report an empty export) when the server returns JSON for an M3U request', async () => {
+        // Accept-header negotiation failed: the server ignored audio/x-mpegurl and
+        // sent the JSON track array, which the client parses to a non-string body.
+        mockClient.requestWithMeta.mockResolvedValue({ data: [{ id: '1' }], total: 1 });
+
+        await expect(
+          getPlaylistTracks(mockClient, {
+            playlistId: 'playlist-123',
+            format: 'm3u',
+          }),
+        ).rejects.toThrow(/did not honor the audio\/x-mpegurl Accept header/);
+      });
     });
 
     describe('reorderPlaylistTrack', () => {

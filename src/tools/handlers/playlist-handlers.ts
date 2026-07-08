@@ -234,7 +234,7 @@ const tools: Tool[] = [
   },
   {
     name: 'remove_tracks_from_playlist',
-    description: 'Remove tracks from a playlist by their `id` (the track\'s 1-based POSITION in the playlist, matching the `id` field from get_playlist_tracks — mediaFileId is the stable song id, NOT used here). Duplicate songs each occupy their own position, which is why removal keys on position rather than song id. Positions SHIFT after any add/remove/reorder, so call get_playlist_tracks again for fresh ids before each mutation and never reuse ids across mutations.',
+    description: 'Remove tracks from a playlist by their `id` (the track\'s 1-based POSITION in the playlist, matching the `id` field from get_playlist_tracks — mediaFileId is the stable song id, NOT used here). Duplicate songs each occupy their own position, which is why removal keys on position rather than song id. Positions SHIFT after any add/remove/reorder, so call get_playlist_tracks again for fresh ids before each mutation and never reuse ids across mutations. Remove at most 500 tracks per call; for larger clears, batch into repeated calls (re-read positions between batches).',
     inputSchema: {
       type: 'object',
       properties: {
@@ -245,8 +245,9 @@ const tools: Tool[] = [
         trackIds: {
           type: 'array',
           items: { type: 'string' },
-          description: 'Array of track position IDs to remove',
+          description: 'Array of track position IDs to remove (max 500 per call)',
           minItems: 1,
+          maxItems: 500,
         },
       },
       required: ['playlistId', 'trackIds'],

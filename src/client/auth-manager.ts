@@ -95,18 +95,25 @@ export class AuthManager {
       throw new Error(ErrorFormatter.authentication(`${response.status} ${response.statusText}`));
     }
 
-    let data: { token: string };
+    let data: unknown;
     try {
-      data = (await response.json()) as { token: string };
+      data = await response.json();
     } catch {
       // 200 OK but body wasn't valid JSON (empty body, HTML error page from a
       // proxy, etc.) — surface with auth context instead of a bare SyntaxError.
       throw new Error(ErrorFormatter.authentication('invalid JSON in /auth/login response'));
     }
-    if (typeof data.token !== 'string' || data.token === '') {
+    if (data === null || typeof data !== 'object') {
+      // 200 OK but the body was a non-object (literal `null`, string, number)
+      // from a misbehaving proxy/cache — guard before reading `.token` so the
+      // failure carries auth context instead of a native TypeError.
+      throw new Error(ErrorFormatter.authentication('unexpected /auth/login response shape'));
+    }
+    const token = (data as { token?: unknown }).token;
+    if (typeof token !== 'string' || token === '') {
       throw new Error(ErrorFormatter.authentication('server returned no token'));
     }
-    this.token = data.token;
+    this.token = token;
     this.tokenExpiry = new Date(Date.now() + this.config.tokenExpiry * 1000); // Convert seconds to milliseconds
     logger.debug('Authentication successful');
   }

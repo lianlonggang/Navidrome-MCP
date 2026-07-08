@@ -108,6 +108,14 @@ export const MPV_COMMAND_TIMEOUT_LOAD_MS = 5000;
 export const MPV_IPC_CONNECT_RETRIES = 50;
 export const MPV_IPC_CONNECT_DELAY_MS = 100;
 
+/** Per-attempt connect timeout for a single openSocket() try. A local IPC
+ *  connect (Unix socket / named pipe) settles in single-digit ms via
+ *  'connect'/'error'; if one attempt hangs without either (exotic, but it would
+ *  otherwise stall connect()'s awaited retry loop indefinitely), we tear the
+ *  socket down and reject so the loop advances/throws per its documented
+ *  budget. Generous relative to the ~100ms retry delay. */
+export const MPV_IPC_CONNECT_TIMEOUT_MS = 1000;
+
 /** Probe timeout used by cleanupStaleSocket to decide whether a socket file
  *  is bound to a live mpv before unlinking. */
 export const MPV_STALE_SOCKET_PROBE_MS = 100;

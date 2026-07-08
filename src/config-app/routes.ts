@@ -25,7 +25,7 @@ import { ConfigSchema } from '../config/schema.js';
 import { NavidromeClient } from '../client/navidrome-client.js';
 import { writeJson, writeError, readJsonBody } from '../webui/http-helpers.js';
 import { ErrorFormatter } from '../utils/error-formatter.js';
-import { logger } from '../utils/logger.js';
+import { logger, redact } from '../utils/logger.js';
 
 /**
  * Sentinel sent to / accepted from the browser in place of the real password,
@@ -134,8 +134,13 @@ async function handleTest(req: IncomingMessage, res: ServerResponse): Promise<vo
     await client.initialize(); // JWT login — the actual connectivity + auth test
     writeJson(res, 200, { ok: true, message: 'Successfully connected to Navidrome.' });
   } catch (err) {
-    // Run through ErrorFormatter so a mistyped URL with creds is never echoed raw.
-    writeJson(res, 200, { ok: false, error: ErrorFormatter.authentication(extractMessage(err)) });
+    // redact() strips any credentials embedded in the error text before it is
+    // echoed to the browser (e.g. a mistyped URL with userinfo, which native
+    // fetch reflects verbatim in its TypeError). ErrorFormatter only prefixes
+    // context and does no sanitization, so the redact() wrap is what enforces
+    // the "user-facing URLs strip credentials" convention here.
+    const message = redact(ErrorFormatter.authentication(extractMessage(err))) as string;
+    writeJson(res, 200, { ok: false, error: message });
   }
 }
 

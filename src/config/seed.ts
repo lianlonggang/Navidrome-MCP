@@ -80,27 +80,47 @@ export function buildFormSeed(): SettingsFile {
  * narrower than {@link buildFormSeed}: it does NOT read legacy `.env` files, so the
  * on-disk config story stays two-source (settings.json, else live env) rather than
  * resurrecting file-based env drift. A `settings.json`, once created, always wins.
+ *
+ * Passes `applySuggestions: false`: this unattended path has no review-and-Save
+ * step, so radio/lyrics enable ONLY when the operator explicitly sets their env
+ * vars — never from the `FORM_SUGGESTIONS` first-run convenience defaults — keeping
+ * headless deployments faithful to the documented feature-gated env opt-in model.
  */
 export function buildEnvRuntimeSettings(): SettingsFile {
   return settingsFromEnvSource((key) => {
     const value = process.env[key];
     return value !== undefined && value.trim() !== '' ? value : undefined;
-  });
+  }, false);
 }
 
 function importFromLegacyEnv(): SettingsFile {
   const envFile = readLegacyEnvFile();
+  // Review-gated GUI form-seed path: keep the first-run convenience defaults.
   return settingsFromEnvSource((key: string): string | undefined => {
     const fromProcess = process.env[key];
     if (fromProcess !== undefined && fromProcess.trim() !== '') return fromProcess;
     const fromFile = envFile[key];
     if (fromFile !== undefined && fromFile.trim() !== '') return fromFile;
     return undefined;
-  });
+  }, true);
 }
 
-/** Map env-style keys (via `get`) into the nested settings shape. */
-function settingsFromEnvSource(get: (key: string) => string | undefined): SettingsFile {
+/**
+ * Map env-style keys (via `get`) into the nested settings shape.
+ *
+ * `applySuggestions` controls whether the feature-gating radio/lyrics fields fall
+ * back to the recommended `FORM_SUGGESTIONS` defaults when the operator left the
+ * env var unset. `true` for the review-gated GUI form-seed (first-run convenience);
+ * `false` for the unattended env-runtime path so those third-party features stay
+ * strictly opt-in. `musicBrainzUserAgent` is exempt — MusicBrainz is unconditionally
+ * on (no feature gate), so it keeps its default either way.
+ */
+function settingsFromEnvSource(
+  get: (key: string) => string | undefined,
+  applySuggestions: boolean,
+): SettingsFile {
+  const suggest = (key: keyof typeof FORM_SUGGESTIONS): string | null =>
+    applySuggestions ? FORM_SUGGESTIONS[key] : null;
 
   const libsRaw = get('NAVIDROME_DEFAULT_LIBRARIES');
   const defaultLibraryIds = libsRaw !== undefined
@@ -136,16 +156,18 @@ function settingsFromEnvSource(get: (key: string) => string | undefined): Settin
     features: {
       lastFmApiKey: get('LASTFM_API_KEY') ?? null,
       musicBrainzUserAgent: get('MUSICBRAINZ_USER_AGENT') ?? FORM_SUGGESTIONS['features.musicBrainzUserAgent'],
-      // Radio + lyrics gating fields are pre-filled with the recommended
-      // defaults on first run (the values are the single-sourced FORM_SUGGESTIONS
-      // above, so the form's later-run "suggested" hints match exactly).
-      radioBrowserUserAgent: get('RADIO_BROWSER_USER_AGENT') ?? FORM_SUGGESTIONS['features.radioBrowserUserAgent'],
+      // Radio + lyrics gating fields fall back to the recommended defaults ONLY
+      // when applySuggestions is set (the review-gated GUI form-seed path). The
+      // single-sourced FORM_SUGGESTIONS values match the form's later-run
+      // "suggested" hints exactly. On the unattended env-runtime path these stay
+      // blank so radio/lyrics enable only on an explicit operator opt-in.
+      radioBrowserUserAgent: get('RADIO_BROWSER_USER_AGENT') ?? suggest('features.radioBrowserUserAgent'),
       // Left blank by default: blank means SRV-based auto mirror selection, which
       // is more robust than pinning one mirror that may go offline.
       radioBrowserBase: get('RADIO_BROWSER_BASE') ?? null,
-      lyricsProvider: get('LYRICS_PROVIDER') ?? FORM_SUGGESTIONS['features.lyricsProvider'],
-      lrclibUserAgent: get('LRCLIB_USER_AGENT') ?? FORM_SUGGESTIONS['features.lrclibUserAgent'],
-      lrclibBase: get('LRCLIB_BASE') ?? FORM_SUGGESTIONS['features.lrclibBase'],
+      lyricsProvider: get('LYRICS_PROVIDER') ?? suggest('features.lyricsProvider'),
+      lrclibUserAgent: get('LRCLIB_USER_AGENT') ?? suggest('features.lrclibUserAgent'),
+      lrclibBase: get('LRCLIB_BASE') ?? suggest('features.lrclibBase'),
     },
     playback: {
       mpvPath: get('MPV_PATH') ?? null,

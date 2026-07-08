@@ -25,6 +25,9 @@ const FALLBACK_ENV_KEYS = [
   'NAVIDROME_URL', 'NAVIDROME_USERNAME', 'NAVIDROME_PASSWORD',
   'MCP_TRANSPORT', 'MCP_HTTP_HOST', 'MCP_HTTP_PORT', 'MCP_HTTP_EXPOSE',
   'MCP_HTTP_AUTH_TOKEN', 'MCP_HTTP_ALLOWED_HOSTS', 'MCP_HTTP_ALLOWED_ORIGINS',
+  // Feature-gating env vars — cleared so a developer's shell can't spuriously
+  // enable radio/lyrics and break the opt-in assertions below.
+  'RADIO_BROWSER_USER_AGENT', 'LYRICS_PROVIDER', 'LRCLIB_USER_AGENT', 'LASTFM_API_KEY',
 ];
 
 describe('config resolution', () => {
@@ -272,6 +275,31 @@ describe('config resolution', () => {
     it('ignores a blank NAVIDROME_URL', async () => {
       process.env['NAVIDROME_URL'] = '   ';
       expect(await resolveConfigState()).toEqual({ configured: false });
+    });
+
+    it('leaves radio + lyrics OFF with only core creds (no FORM_SUGGESTIONS defaults)', async () => {
+      setEnvCreds();
+      const state = await resolveConfigState();
+      expect(state.configured).toBe(true);
+      if (state.configured) {
+        // The headless env-runtime path must not silently enable third-party
+        // outbound features from the form-seed convenience defaults.
+        expect(state.config.features.radioBrowser).toBe(false);
+        expect(state.config.features.lyrics).toBe(false);
+      }
+    });
+
+    it('enables radio + lyrics only when the operator sets their env vars', async () => {
+      setEnvCreds();
+      process.env['RADIO_BROWSER_USER_AGENT'] = 'MyAgent/1.0';
+      process.env['LYRICS_PROVIDER'] = 'lrclib';
+      process.env['LRCLIB_USER_AGENT'] = 'MyAgent/1.0';
+      const state = await resolveConfigState();
+      expect(state.configured).toBe(true);
+      if (state.configured) {
+        expect(state.config.features.radioBrowser).toBe(true);
+        expect(state.config.features.lyrics).toBe(true);
+      }
     });
   });
 });

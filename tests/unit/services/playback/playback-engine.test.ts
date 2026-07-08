@@ -517,3 +517,71 @@ describe('shufflePlaylist play-head preservation (Issue #5)', () => {
     expect(ipc.command.mock.calls.filter((c) => c[0] === 'playlist-move')).toHaveLength(0);
   });
 });
+
+// ---------- setVolume clamps out-of-range levels to [0, 100] ----------
+
+describe('setVolume clamps to [0, 100]', () => {
+  it('clamps a level above 100 down to 100 and issues set_property volume 100', async () => {
+    const ipc = fakeIpcRef.value as FakeIpc;
+    await playbackEngine.ensureRunning();
+    ipc.command.mockClear();
+
+    const applied = await playbackEngine.setVolume(150);
+
+    expect(applied).toBe(100);
+    expect(ipc.command.mock.calls).toContainEqual(['set_property', 'volume', 100]);
+  });
+
+  it('clamps a negative level up to 0 and issues set_property volume 0', async () => {
+    const ipc = fakeIpcRef.value as FakeIpc;
+    await playbackEngine.ensureRunning();
+    ipc.command.mockClear();
+
+    const applied = await playbackEngine.setVolume(-5);
+
+    expect(applied).toBe(0);
+    expect(ipc.command.mock.calls).toContainEqual(['set_property', 'volume', 0]);
+  });
+
+  it('passes an in-range level through unchanged', async () => {
+    const ipc = fakeIpcRef.value as FakeIpc;
+    await playbackEngine.ensureRunning();
+    ipc.command.mockClear();
+
+    const applied = await playbackEngine.setVolume(42);
+
+    expect(applied).toBe(42);
+    expect(ipc.command.mock.calls).toContainEqual(['set_property', 'volume', 42]);
+  });
+});
+
+// ---------- mpv-reconnect: ensureRunning re-attaches after an unexpected IPC drop ----------
+
+describe('ensureRunning reconnect after unexpected disconnect (mpv-reconnect)', () => {
+  it('re-attaches on the FIRST control call after an in-process IPC drop', async () => {
+    const ipc = fakeIpcRef.value as FakeIpc;
+
+    // First start: engine attaches to the (fake) mpv IPC.
+    await playbackEngine.ensureRunning();
+    expect(playbackEngine.isRunning()).toBe(true);
+
+    // Fire the disconnect handler the engine registered via installObservers
+    // to simulate mpv dropping the IPC socket unexpectedly. That handler
+    // clears the engine's ipc handle (this.ipc = null) without touching
+    // startPromise.
+    const disconnectHandler = ipc.onDisconnect.mock.calls[0]?.[0] as (() => void) | undefined;
+    expect(disconnectHandler).toBeTypeOf('function');
+    disconnectHandler?.();
+
+    // Engine now reports not-running (ipc handle gone).
+    expect(playbackEngine.isRunning()).toBe(false);
+
+    // The FIRST mutating control after the disconnect must transparently
+    // re-attach. The bug left a stale settled startPromise, so this first
+    // ensureRunning() no-op'd and requireIpc() threw "mpv IPC is not
+    // connected"; only the second call reconnected. With the fix (finally
+    // clears startPromise unconditionally), the first call reconnects.
+    await expect(playbackEngine.pause()).resolves.toBeUndefined();
+    expect(playbackEngine.isRunning()).toBe(true);
+  });
+});

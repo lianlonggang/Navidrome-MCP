@@ -210,7 +210,7 @@ const tools: Tool[] = [
   },
   {
     name: 'get_user_details',
-    description: 'Get user information including available libraries with active status flags. Library filtering affects all search and list operations. When multiple libraries are active, results combine content from all active libraries. Use this to separate different music collections (e.g., personal vs family music).',
+    description: 'Get user information including available libraries with active status flags. Library filtering affects all search and list operations. When multiple libraries are active, results combine content from all active libraries. Use this to separate different music collections (e.g., personal vs family music). Note: the server authenticates as a single Navidrome account, so the active-library selection is process-global — under the HTTP transport it is shared across ALL connected sessions.',
     inputSchema: {
       type: 'object',
       properties: {},
@@ -218,7 +218,7 @@ const tools: Tool[] = [
   },
   {
     name: 'set_active_libraries',
-    description: 'Set which libraries are active for filtering music content. Library filtering affects all search and list operations. When multiple libraries are active, results combine content from all active libraries. Use this to separate different music collections (e.g., personal vs family music).',
+    description: 'Set which libraries are active for filtering music content. Library filtering affects all search and list operations. When multiple libraries are active, results combine content from all active libraries. Use this to separate different music collections (e.g., personal vs family music). Note: the server authenticates as a single Navidrome account, so this selection is process-global — under the HTTP transport a set_active_libraries call changes the active-library filter for ALL connected sessions, not just the caller.',
     inputSchema: {
       type: 'object',
       properties: {

@@ -2,18 +2,24 @@
  * Navidrome MCP Server - MusicBrainz client unit tests
  * Copyright (C) 2025
  *
- * Covers the MB utility behind get_artist_albums: the 1 req/s throttle queue,
- * release-group browse paging, genre mapping, artist-search pick logic, and
- * User-Agent sourcing. All fetches are mocked (never hit musicbrainz.org).
+ * Covers the MB utility behind get_artist_albums and get_album_info: the
+ * 1 req/s throttle queue, release-group browse paging, genre mapping,
+ * artist-search pick logic, User-Agent sourcing, release-group lookup/search
+ * (exact-title vs. score fallback), and release-browse tracklist selection
+ * (Official-preferred/earliest-date, multi-disc renumbering). All fetches are
+ * mocked (never hit musicbrainz.org).
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { makeTestConfig } from '../../helpers/test-config.js';
 import {
   browseMbReleaseGroups,
+  browseMbReleaseTracklist,
   lookupMbArtist,
+  lookupMbReleaseGroup,
   resetMusicBrainzThrottleForTests,
   searchMbArtist,
+  searchMbReleaseGroup,
 } from '../../../src/utils/musicbrainz.js';
 
 function jsonResponse(body: unknown): Response {
@@ -252,5 +258,206 @@ describe('browseMbReleaseGroups', () => {
     } as unknown as Response) as unknown as typeof fetch;
 
     await expect(browseMbReleaseGroups('mbid-x', ['album'], makeTestConfig())).rejects.toThrow(/MusicBrainz/);
+  });
+});
+
+describe('lookupMbReleaseGroup', () => {
+  it('maps artist-credit, genres, year, and types for an MBID', async () => {
+    global.fetch = vi.fn().mockResolvedValue(jsonResponse({
+      id: 'rg-mbid',
+      title: 'Dark All Day',
+      'first-release-date': '2018-10-05',
+      'primary-type': 'Album',
+      'secondary-types': ['Compilation'],
+      genres: [
+        { name: 'Electronic', count: 2 },
+        { name: 'Synthwave', count: 7 },
+      ],
+      'artist-credit': [{ name: 'GUNSHIP' }, { name: 'Tim Cappello' }],
+      disambiguation: 'the studio album',
+    })) as unknown as typeof fetch;
+
+    const detail = await lookupMbReleaseGroup('rg-mbid', makeTestConfig());
+    expect(detail?.mbid).toBe('rg-mbid');
+    expect(detail?.title).toBe('Dark All Day');
+    expect(detail?.artistName).toBe('GUNSHIP'); // first credit only
+    expect(detail?.year).toBe(2018);
+    expect(detail?.primaryType).toBe('Album');
+    expect(detail?.secondaryTypes).toEqual(['compilation']);
+    expect(detail?.genres).toEqual(['synthwave', 'electronic']); // vote-count desc
+    expect(detail?.disambiguation).toBe('the studio album');
+  });
+
+  it('returns null artistName when MB supplies no artist-credit', async () => {
+    global.fetch = vi.fn().mockResolvedValue(jsonResponse({
+      id: 'rg-mbid',
+      title: 'Untitled',
+      'first-release-date': '',
+    })) as unknown as typeof fetch;
+
+    const detail = await lookupMbReleaseGroup('rg-mbid', makeTestConfig());
+    expect(detail?.artistName).toBeNull();
+    expect(detail?.year).toBeNull();
+    expect(detail?.genres).toEqual([]);
+  });
+
+  it('requests genres + artist-credits inc on the lookup', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ id: 'rg', title: 'X' }));
+    global.fetch = fetchMock as unknown as typeof fetch;
+
+    await lookupMbReleaseGroup('rg', makeTestConfig());
+    const url = String(fetchMock.mock.calls[0]?.[0]);
+    // URLSearchParams serializes the space in the inc list as '+'; normalize it.
+    expect(decodeURIComponent(url).replaceAll('+', ' ')).toContain('inc=genres artist-credits');
+    expect(url).toContain('/release-group/rg');
+  });
+
+  it('returns null when the row lacks an id/title', async () => {
+    global.fetch = vi.fn().mockResolvedValue(jsonResponse({ title: 'No Id' })) as unknown as typeof fetch;
+    expect(await lookupMbReleaseGroup('rg', makeTestConfig())).toBeNull();
+  });
+});
+
+describe('searchMbReleaseGroup', () => {
+  function rgHit(id: string, title: string, score: number): Record<string, unknown> {
+    return {
+      id,
+      title,
+      score,
+      'first-release-date': '2018-10-05',
+      'primary-type': 'Album',
+      'artist-credit': [{ name: 'GUNSHIP' }],
+    };
+  }
+
+  it('prefers the normalized-title exact match over a higher-scored decoy', async () => {
+    global.fetch = vi.fn().mockResolvedValue(jsonResponse({
+      'release-groups': [
+        rgHit('decoy', 'Dark All Night', 100),
+        rgHit('exact', 'Dark All Day (Deluxe Edition)', 88),
+      ],
+    })) as unknown as typeof fetch;
+
+    // normTitle strips the "(Deluxe Edition)" noise group, so the lower-scored
+    // hit is the exact-title match and must win despite the decoy's score 100.
+    const detail = await searchMbReleaseGroup('GUNSHIP', 'Dark All Day', makeTestConfig());
+    expect(detail?.mbid).toBe('exact');
+  });
+
+  it('falls back to the top hit when it clears the score threshold', async () => {
+    global.fetch = vi.fn().mockResolvedValue(jsonResponse({
+      'release-groups': [rgHit('top', 'Darkest Days', 92)],
+    })) as unknown as typeof fetch;
+
+    const detail = await searchMbReleaseGroup('GUNSHIP', 'Dark All Day', makeTestConfig());
+    expect(detail?.mbid).toBe('top');
+  });
+
+  it('returns null when there is no exact match and the top score is too low', async () => {
+    global.fetch = vi.fn().mockResolvedValue(jsonResponse({
+      'release-groups': [rgHit('weak', 'Something Unrelated', 40)],
+    })) as unknown as typeof fetch;
+
+    expect(await searchMbReleaseGroup('GUNSHIP', 'Dark All Day', makeTestConfig())).toBeNull();
+  });
+
+  it('returns null on an empty result set', async () => {
+    global.fetch = vi.fn().mockResolvedValue(jsonResponse({ 'release-groups': [] })) as unknown as typeof fetch;
+    expect(await searchMbReleaseGroup('GUNSHIP', 'Nothing', makeTestConfig())).toBeNull();
+  });
+});
+
+describe('browseMbReleaseTracklist', () => {
+  function track(title: string, position: number, length?: number): Record<string, unknown> {
+    return length === undefined ? { title, position } : { title, position, length };
+  }
+  function medium(position: number, tracks: Array<Record<string, unknown>>): Record<string, unknown> {
+    return { position, tracks };
+  }
+  function release(id: string, overrides: Record<string, unknown> = {}): Record<string, unknown> {
+    return {
+      id,
+      status: 'Official',
+      date: '2020-01-01',
+      country: 'XW',
+      media: [medium(1, [track('T1', 1, 240000)])],
+      ...overrides,
+    };
+  }
+
+  it('renumbers tracks sequentially across sorted multi-disc media', async () => {
+    global.fetch = vi.fn().mockResolvedValue(jsonResponse({
+      releases: [release('r1', {
+        media: [
+          // Disc 2 listed first and tracks out of order — both must be sorted.
+          medium(2, [track('B2', 2), track('B1', 1)]),
+          medium(1, [track('A2', 2), track('A1', 1)]),
+        ],
+      })],
+    })) as unknown as typeof fetch;
+
+    const list = await browseMbReleaseTracklist('rg', makeTestConfig());
+    expect(list?.tracks.map(t => t.title)).toEqual(['A1', 'A2', 'B1', 'B2']);
+    expect(list?.tracks.map(t => t.position)).toEqual([1, 2, 3, 4]);
+  });
+
+  it('rounds track length to whole seconds and keeps null when absent', async () => {
+    global.fetch = vi.fn().mockResolvedValue(jsonResponse({
+      releases: [release('r1', {
+        media: [medium(1, [
+          track('exact', 1, 240000),   // 240s
+          track('rounded', 2, 90500),  // 90.5s → 91
+          track('unknown', 3),         // no length → null
+        ])],
+      })],
+    })) as unknown as typeof fetch;
+
+    const list = await browseMbReleaseTracklist('rg', makeTestConfig());
+    expect(list?.tracks.map(t => t.durationSeconds)).toEqual([240, 91, null]);
+  });
+
+  it('prefers an Official release over an earlier non-Official one', async () => {
+    global.fetch = vi.fn().mockResolvedValue(jsonResponse({
+      releases: [
+        release('bootleg', { status: 'Bootleg', date: '2015-01-01' }),
+        release('official', { status: 'Official', date: '2020-01-01' }),
+      ],
+    })) as unknown as typeof fetch;
+
+    const list = await browseMbReleaseTracklist('rg', makeTestConfig());
+    expect(list?.releaseMbid).toBe('official');
+    expect(list?.status).toBe('Official');
+  });
+
+  it('within the pool picks the earliest date, sorting undated last', async () => {
+    global.fetch = vi.fn().mockResolvedValue(jsonResponse({
+      releases: [
+        release('full', { date: '2019-06-01' }),
+        release('partial', { date: '2018' }),   // partial date sorts before full 2018-xx / 2019
+        release('undated', { date: null }),
+      ],
+    })) as unknown as typeof fetch;
+
+    const list = await browseMbReleaseTracklist('rg', makeTestConfig());
+    expect(list?.releaseMbid).toBe('partial');
+    expect(list?.date).toBe('2018');
+    expect(list?.country).toBe('XW');
+  });
+
+  it('returns null when no release has a usable tracklist', async () => {
+    global.fetch = vi.fn().mockResolvedValue(jsonResponse({
+      releases: [
+        { id: 'no-tracks', status: 'Official', date: '2020-01-01', media: [] },
+        // A medium whose only track lacks a title → dropped → release has 0 tracks.
+        { id: 'titleless', status: 'Official', date: '2020-01-01', media: [medium(1, [{ position: 1 }])] },
+      ],
+    })) as unknown as typeof fetch;
+
+    expect(await browseMbReleaseTracklist('rg', makeTestConfig())).toBeNull();
+  });
+
+  it('returns null on an empty releases array', async () => {
+    global.fetch = vi.fn().mockResolvedValue(jsonResponse({ releases: [] })) as unknown as typeof fetch;
+    expect(await browseMbReleaseTracklist('rg', makeTestConfig())).toBeNull();
   });
 });

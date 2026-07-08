@@ -29,7 +29,6 @@ export const DEFAULT_VALUES = {
   // External API integrations
   SIMILAR_ARTISTS_LIMIT: 100,
   SIMILAR_TRACKS_LIMIT: 100,
-  TOP_TRACKS_BY_ARTIST_LIMIT: 100,
   TRENDING_MUSIC_LIMIT: 100,
   
   // Tag management
@@ -37,7 +36,6 @@ export const DEFAULT_VALUES = {
   TAG_SEARCH_LIMIT: 100,
   TAG_DISTRIBUTION_LIMIT: 10, // for analysis, keep reasonable
   TAG_DISTRIBUTION_VALUES_LIMIT: 20, // max values per tag
-  UNIQUE_TAGS_LIMIT: 100,
   
   // Radio discovery
   RADIO_DISCOVERY_LIMIT: 15, // optimal for discovery without overwhelming

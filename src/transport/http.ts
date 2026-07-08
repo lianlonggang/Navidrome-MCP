@@ -38,6 +38,18 @@ const HEALTH_PATH = '/healthz';
  */
 const MCP_MAX_BODY_BYTES = 4 * 1024 * 1024;
 
+/**
+ * Idle-session reaper tuning. A GET SSE stream that goes silent without a clean
+ * TCP close (NAT timeout, client crash, network partition) would otherwise leave
+ * its transport + Server resident in the sessions map forever — an unbounded
+ * growth vector for a long-lived process serving many remote clients. Sessions
+ * with no request activity for {@link SESSION_IDLE_TIMEOUT_MS} are closed on each
+ * {@link SESSION_SWEEP_INTERVAL_MS} tick. The window is generous so a client
+ * making periodic tool calls is never reaped mid-use.
+ */
+const SESSION_IDLE_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes
+const SESSION_SWEEP_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
+
 /** A running HTTP transport: where clients connect, and how to stop it. */
 export interface HttpTransport {
   url: string;
@@ -115,6 +127,11 @@ export async function startHttpTransport(options: HttpTransportOptions): Promise
   // map never leaks across reconnects.
   const transports = new Map<string, StreamableHTTPServerTransport>();
 
+  // Last-activity timestamp (ms epoch) per session, updated on every routed
+  // request. The idle reaper below evicts sessions that fall silent so an
+  // abandoned SSE stream can't pin its transport in memory indefinitely.
+  const lastActivity = new Map<string, number>();
+
   const httpServer: HttpServer = createServer((req, res) => {
     void handleRequest(req, res);
   });
@@ -190,11 +207,13 @@ export async function startHttpTransport(options: HttpTransportOptions): Promise
     }
 
     const sessionId = headerValue(req, 'mcp-session-id');
-    const existing = sessionId !== undefined ? transports.get(sessionId) : undefined;
-
-    if (existing !== undefined) {
-      await existing.handleRequest(req, res, body);
-      return;
+    if (sessionId !== undefined) {
+      const existing = transports.get(sessionId);
+      if (existing !== undefined) {
+        lastActivity.set(sessionId, Date.now());
+        await existing.handleRequest(req, res, body);
+        return;
+      }
     }
 
     // No live session: only an `initialize` request may open one. Anything else
@@ -217,6 +236,7 @@ export async function startHttpTransport(options: HttpTransportOptions): Promise
       ...(allowedOrigins !== undefined ? { allowedOrigins } : {}),
       onsessioninitialized: (sid): void => {
         transports.set(sid, transport);
+        lastActivity.set(sid, Date.now());
         logger.debug(`MCP HTTP session initialized: ${sid}`);
       },
     });
@@ -224,8 +244,11 @@ export async function startHttpTransport(options: HttpTransportOptions): Promise
     // disconnect), so reconnecting clients don't accumulate dead entries.
     transport.onclose = (): void => {
       const sid = transport.sessionId;
-      if (sid !== undefined && transports.delete(sid)) {
-        logger.debug(`MCP HTTP session closed: ${sid}`);
+      if (sid !== undefined) {
+        lastActivity.delete(sid);
+        if (transports.delete(sid)) {
+          logger.debug(`MCP HTTP session closed: ${sid}`);
+        }
       }
     };
 
@@ -237,10 +260,11 @@ export async function startHttpTransport(options: HttpTransportOptions): Promise
   async function handleSessionRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
     const sessionId = headerValue(req, 'mcp-session-id');
     const transport = sessionId !== undefined ? transports.get(sessionId) : undefined;
-    if (transport === undefined) {
+    if (transport === undefined || sessionId === undefined) {
       writeJsonRpcError(res, 400, 'Bad Request: no valid session ID provided');
       return;
     }
+    lastActivity.set(sessionId, Date.now());
     await transport.handleRequest(req, res);
   }
 
@@ -252,18 +276,50 @@ export async function startHttpTransport(options: HttpTransportOptions): Promise
     });
   });
 
-  const close = (): Promise<void> =>
-    new Promise<void>((resolvePromise) => {
-      // Close each transport so in-flight SSE streams end and sessions clear,
-      // then stop accepting connections. Terminate keep-alive sockets so
-      // server.close()'s callback actually fires.
-      for (const transport of transports.values()) {
-        void transport.close();
+  // Idle-session reaper: evict sessions with no request activity past the
+  // threshold so an abandoned SSE stream can't pin its transport forever.
+  // Unref'd so it never keeps the process alive on its own — the listening
+  // server does that; this only bounds how long dead sessions linger.
+  const reaper = setInterval(() => {
+    const now = Date.now();
+    for (const [sid, ts] of lastActivity) {
+      if (now - ts <= SESSION_IDLE_TIMEOUT_MS) continue;
+      lastActivity.delete(sid);
+      const transport = transports.get(sid);
+      if (transport !== undefined) {
+        logger.debug(`Reaping idle MCP HTTP session: ${sessionFingerprint(sid)}`);
+        void transport.close(); // onclose removes it from `transports`
+      } else {
+        transports.delete(sid);
       }
-      transports.clear();
-      httpServer.closeAllConnections();
+    }
+  }, SESSION_SWEEP_INTERVAL_MS);
+  reaper.unref();
+
+  const close = async (): Promise<void> => {
+    // Stop the reaper first so it can't fire mid-teardown.
+    clearInterval(reaper);
+    // Close each transport so its in-flight SSE stream ends and its final
+    // response flushes BEFORE we destroy sockets — otherwise closeAllConnections()
+    // would yank the very sockets each transport.close() is still using to flush,
+    // resetting connected clients and dropping any in-flight tool-call response.
+    // Swallow per-transport errors so one bad session can't abort shutdown.
+    await Promise.all(
+      [...transports.values()].map((transport) =>
+        transport.close().catch((err: unknown) => {
+          logger.debug('Error closing MCP transport during shutdown:', err);
+        }),
+      ),
+    );
+    transports.clear();
+    lastActivity.clear();
+    // Terminate any remaining keep-alive sockets so server.close()'s callback
+    // actually fires (an idle keep-alive socket would otherwise hold it open).
+    httpServer.closeAllConnections();
+    await new Promise<void>((resolvePromise) => {
       httpServer.close(() => resolvePromise());
     });
+  };
 
   // Read the actually-bound port from the socket — it differs from the
   // requested one when `port: 0` asks the OS for an ephemeral port (used by

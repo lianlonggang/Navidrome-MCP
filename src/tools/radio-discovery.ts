@@ -456,7 +456,10 @@ export async function getRadioFilters(config: Config, args: unknown): Promise<Ra
   const radioBrowserBase = await getRadioBrowserBase(config.radioBrowserBaseOverride);
 
   try {
-    const fetchPromises: Promise<void>[] = [];
+    // Each task carries its `kind` label so a rejected fetch can be named in
+    // `partialFailures` below — an LLM caller otherwise can't distinguish
+    // "I didn't request languages" from "the languages fetch errored".
+    const fetchTasks: { kind: string; promise: Promise<void> }[] = [];
 
     // All four filter-list endpoints are pure reads — safe to retry on timeout.
     const filterFetchOptions = {
@@ -468,7 +471,7 @@ export async function getRadioFilters(config: Config, args: unknown): Promise<Ra
     };
 
     if (params.kinds.includes('tags')) {
-      fetchPromises.push((async (): Promise<void> => {
+      fetchTasks.push({ kind: 'tags', promise: (async (): Promise<void> => {
         const res = await fetchWithTimeout(
           `${radioBrowserBase}/json/tags`,
           filterHeaders,
@@ -478,12 +481,12 @@ export async function getRadioFilters(config: Config, args: unknown): Promise<Ra
         const data = await res.json() as RadioBrowserTag[];
         result.tags = data
           .slice(0, 100)
-          .map(t => ({ name: t.name, stationCount: t.stationcount }));
-      })());
+          .map(t => ({ name: t.name, stationCount: safeNumber(t.stationcount) }));
+      })() });
     }
 
     if (params.kinds.includes('countries')) {
-      fetchPromises.push((async (): Promise<void> => {
+      fetchTasks.push({ kind: 'countries', promise: (async (): Promise<void> => {
         const res = await fetchWithTimeout(
           `${radioBrowserBase}/json/countries`,
           filterHeaders,
@@ -496,13 +499,13 @@ export async function getRadioFilters(config: Config, args: unknown): Promise<Ra
           .map(c => ({
             code: c.iso_3166_1,
             name: c.name,
-            stationCount: c.stationcount
+            stationCount: safeNumber(c.stationcount)
           }));
-      })());
+      })() });
     }
 
     if (params.kinds.includes('languages')) {
-      fetchPromises.push((async (): Promise<void> => {
+      fetchTasks.push({ kind: 'languages', promise: (async (): Promise<void> => {
         const res = await fetchWithTimeout(
           `${radioBrowserBase}/json/languages`,
           filterHeaders,
@@ -515,13 +518,13 @@ export async function getRadioFilters(config: Config, args: unknown): Promise<Ra
           .map(l => ({
             code: l.iso_639 ?? l.name,
             name: l.name,
-            stationCount: l.stationcount
+            stationCount: safeNumber(l.stationcount)
           }));
-      })());
+      })() });
     }
 
     if (params.kinds.includes('codecs')) {
-      fetchPromises.push((async (): Promise<void> => {
+      fetchTasks.push({ kind: 'codecs', promise: (async (): Promise<void> => {
         const res = await fetchWithTimeout(
           `${radioBrowserBase}/json/codecs`,
           filterHeaders,
@@ -533,21 +536,38 @@ export async function getRadioFilters(config: Config, args: unknown): Promise<Ra
           .slice(0, 50)
           .map(c => ({
             name: c.name,
-            stationCount: c.stationcount
+            stationCount: safeNumber(c.stationcount)
           }));
-      })());
+      })() });
     }
 
-    const outcomes = await Promise.allSettled(fetchPromises);
-    const rejected = outcomes.filter((o): o is PromiseRejectedResult => o.status === 'rejected');
-    const allFailed = outcomes.length > 0 && rejected.length === outcomes.length;
+    // Settle every requested kind while retaining its label. The promises are
+    // already in-flight, so awaiting them here stays fully parallel.
+    const failures = (
+      await Promise.all(
+        fetchTasks.map(async ({ kind, promise }): Promise<{ kind: string; reason: unknown } | null> => {
+          try {
+            await promise;
+            return null;
+          } catch (reason) {
+            return { kind, reason };
+          }
+        }),
+      )
+    ).filter((f): f is { kind: string; reason: unknown } => f !== null);
+
+    const allFailed = fetchTasks.length > 0 && failures.length === fetchTasks.length;
     if (allFailed) {
-      throw rejected[0]?.reason instanceof Error
-        ? rejected[0].reason
-        : new Error(String(rejected[0]?.reason));
+      const firstReason = failures[0]?.reason;
+      throw firstReason instanceof Error ? firstReason : new Error(String(firstReason));
     }
-    for (const o of rejected) {
-      logger.debug('getRadioFilters sub-fetch failed:', o.reason);
+    if (failures.length > 0) {
+      // Some kinds succeeded and some failed — surface the failed ones so the
+      // caller doesn't read a missing category as "zero available options".
+      result.partialFailures = failures.map((f) => f.kind);
+      for (const f of failures) {
+        logger.warn('getRadioFilters sub-fetch failed:', f.kind, f.reason);
+      }
     }
     return result;
   } catch (error) {

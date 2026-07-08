@@ -218,11 +218,17 @@ export async function validateRadioStream(
     warnings.push(sampleError);
   }
 
-  // Use whichever response we got. The status may be absent when HEAD failed
-  // and sampling produced headers but no real HTTP status — track it separately
-  // so we never write a bogus 0 into result.httpStatus.
-  const finalStatus: number | null = headResponse?.status ?? sampledStatus;
-  const finalResponse = headResponse ?? (headers !== null ? { headers, status: finalStatus } : null);
+  // Use whichever response we got. When Step 3 actually sampled (headers were
+  // inconclusive), its status/headers must win — the HEAD response is truthy for
+  // ANY reply (2xx/4xx/5xx), so falling back to it here would discard the just-
+  // fetched sample's better content-type / ICY headers and revert to the HEAD
+  // data Step 2 already found inconclusive. `sampledStatus` is null unless Step 3
+  // ran, and `headers` already holds the correctly-prioritized value (sample when
+  // sampled, HEAD when headers were conclusive), so build the response from it.
+  // The status may still be absent when HEAD failed and sampling produced headers
+  // but no real HTTP status — track it separately so we never write a bogus 0.
+  const finalStatus: number | null = sampledStatus ?? headResponse?.status ?? null;
+  const finalResponse = headers !== null ? { headers, status: finalStatus } : headResponse;
 
   if (finalResponse) {
     if (finalStatus !== null) {

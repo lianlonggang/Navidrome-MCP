@@ -199,4 +199,49 @@ describe('getTagDistribution', () => {
     expect(result.distributions).toHaveLength(1);
     expect(result.distributions[0]!.distribution.length).toBe(5);
   });
+
+  it('requests genre distribution sorted by songCount DESC (true top-N, not alphabetical)', async () => {
+    // genre is the one tag name with server-provided counts, so the fetch must
+    // ask Navidrome for the top values by count rather than an alphabetical slice.
+    mockClient.requestWithLibraryFilterAndMeta.mockResolvedValue({
+      data: [makeTag({ tagName: 'genre', tagValue: 'Rock', songCount: 200, albumCount: 20 })],
+      total: 1,
+    });
+
+    await getTagDistribution(mockClient as unknown as NavidromeClient, { tagNames: ['genre'] });
+
+    const [endpoint] = mockClient.requestWithLibraryFilterAndMeta.mock.calls[0]!;
+    expect(endpoint).toContain('_sort=songCount');
+    expect(endpoint).toContain('_order=DESC');
+  });
+
+  it('flags non-genre distributions as sampled and leaves genre unflagged', async () => {
+    // genre → true top-N (server sorts by count) ⇒ unflagged.
+    // mood → alphabetical sample ⇒ sampled: true. mood rows here carry counts,
+    // so no backfill sub-requests are triggered.
+    mockClient.requestWithLibraryFilterAndMeta.mockImplementation((endpoint) => {
+      if (endpoint.includes('tag_name=genre')) {
+        return Promise.resolve({
+          data: [makeTag({ tagName: 'genre', tagValue: 'Rock', songCount: 200, albumCount: 20 })],
+          total: 1,
+        });
+      }
+      if (endpoint.includes('tag_name=mood')) {
+        return Promise.resolve({
+          data: [makeTag({ tagName: 'mood', tagValue: 'Happy', songCount: 50, albumCount: 5 })],
+          total: 1,
+        });
+      }
+      return Promise.resolve({ data: [], total: 0 });
+    });
+
+    const result = await getTagDistribution(mockClient as unknown as NavidromeClient, {
+      tagNames: ['genre', 'mood'],
+    });
+
+    const genreDist = result.distributions.find(d => d.tagName === 'genre');
+    const moodDist = result.distributions.find(d => d.tagName === 'mood');
+    expect(genreDist?.sampled).toBeUndefined();
+    expect(moodDist?.sampled).toBe(true);
+  });
 });

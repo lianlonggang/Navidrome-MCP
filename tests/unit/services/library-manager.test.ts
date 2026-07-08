@@ -141,6 +141,46 @@ describe('LibraryManager.initialize — JWT decode fragility fixes', () => {
         '/user/with_uid_underscores-and-dashes',
       );
     });
+
+    it('scopes to the valid subset of configured defaultLibraryIds', async () => {
+      // applyDefaultConfiguration's valid-subset branch: only library 2 is
+      // requested and it exists, so active ids narrow to exactly [2].
+      const token = makeJwt({ uid: 'user-1' });
+      mockClient.getCurrentToken.mockResolvedValue(token);
+      mockClient.request.mockResolvedValue(makeUserInfo());
+
+      await libraryManager.initialize(
+        mockClient as unknown as NavidromeClient,
+        makeConfig({ defaultLibraryIds: [2] }),
+      );
+
+      expect(libraryManager.isInitialized()).toBe(true);
+      expect(libraryManager.getActiveLibraryIds()).toEqual([2]);
+    });
+
+    it('falls back to all libraries when no configured defaultLibraryId is valid', async () => {
+      // applyDefaultConfiguration's fallback branch: 999 exists in neither
+      // library, so active ids fall back to all available ([1, 2]) and the
+      // "No valid default libraries" warning is emitted.
+      const token = makeJwt({ uid: 'user-1' });
+      mockClient.getCurrentToken.mockResolvedValue(token);
+      mockClient.request.mockResolvedValue(makeUserInfo());
+
+      await libraryManager.initialize(
+        mockClient as unknown as NavidromeClient,
+        makeConfig({ defaultLibraryIds: [999] }),
+      );
+
+      expect(libraryManager.isInitialized()).toBe(true);
+      expect(libraryManager.getActiveLibraryIds()).toEqual([1, 2]);
+      // logger.warn routes to console.error with a `[WARN]` prefix
+      // (src/utils/logger.ts), so assert against the error spy — console.warn
+      // is never called by the logger.
+      expect(consoleErrorSpy).toHaveBeenCalledWith(
+        '[WARN]',
+        expect.stringContaining('No valid default libraries'),
+      );
+    });
   });
 
   describe('soft-fail paths (no crash, manager stays uninitialized)', () => {

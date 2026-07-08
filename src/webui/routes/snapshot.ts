@@ -19,7 +19,7 @@
 import type { ServerResponse } from 'node:http';
 import type { NavidromeClient } from '../../client/navidrome-client.js';
 import { getPlayQueue, nowPlaying } from '../../tools/playback.js';
-import { writeError, writeJson } from '../http-helpers.js';
+import { runAction } from '../http-helpers.js';
 
 /**
  * GET /api/now-playing — JSON form of the same `now_playing` MCP tool result.
@@ -30,14 +30,9 @@ export async function handleNowPlaying(
   res: ServerResponse,
   client: NavidromeClient,
 ): Promise<void> {
-  try {
-    // Pass the client so now_playing can resolve title/artist/album by songId
-    // after an MCP restart (empty engine cache), matching handleQueue.
-    const body = await nowPlaying({}, client);
-    writeJson(res, 200, body);
-  } catch (err) {
-    writeError(res, 500, err instanceof Error ? err.message : 'unknown error');
-  }
+  // Pass the client so now_playing can resolve title/artist/album by songId
+  // after an MCP restart (empty engine cache), matching handleQueue.
+  return runAction(res, () => nowPlaying({}, client));
 }
 
 /**
@@ -47,10 +42,5 @@ export async function handleQueue(
   res: ServerResponse,
   client: NavidromeClient,
 ): Promise<void> {
-  try {
-    const body = await getPlayQueue(client, {});
-    writeJson(res, 200, body);
-  } catch (err) {
-    writeError(res, 500, err instanceof Error ? err.message : 'unknown error');
-  }
+  return runAction(res, () => getPlayQueue(client, {}));
 }

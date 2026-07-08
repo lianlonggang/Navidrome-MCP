@@ -123,6 +123,7 @@ export async function handleCover(
   if (!ALLOWED_IMAGE_TYPES.has(baseType)) {
     logger.debug(`webui: cover proxy rejected non-image content-type "${rawType}" for id=${id}`);
     writeError(res, 502, 'Upstream returned a non-image cover');
+    upstream.body.cancel().catch(() => undefined);
     return;
   }
   const contentType = baseType;

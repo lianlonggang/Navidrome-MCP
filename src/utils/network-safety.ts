@@ -17,6 +17,7 @@
  */
 
 import { lookup as dnsLookup } from 'node:dns/promises';
+import { Agent, buildConnector, fetch as undiciFetch } from 'undici';
 
 const ALLOWED_VALIDATOR_SCHEMES: readonly string[] = ['http:', 'https:'];
 
@@ -153,4 +154,60 @@ export async function hostResolvesToPrivateIp(host: string): Promise<boolean> {
 function isLikelyIpLiteral(host: string): boolean {
   if (host.includes(':')) return true;
   return /^\d+\.\d+\.\d+\.\d+$/.test(host);
+}
+
+/**
+ * Shared undici connector that establishes the connection normally (so DNS
+ * resolution, the Host header, and TLS SNI all use the original hostname —
+ * no IP pinning, so vhost/CDN routing is unaffected) and then inspects the
+ * ACTUAL peer the socket connected to. If that address is private/local the
+ * socket is destroyed before any request bytes are written.
+ *
+ * This closes the DNS-rebinding TOCTOU that a pre-fetch `hostResolvesToPrivateIp`
+ * check cannot: the pre-check and `fetch()` resolve DNS independently, so a
+ * short-TTL domain can answer "public" for the check and "private" for the
+ * connection. Here the address we validate IS the address we're connected to,
+ * so there is no window between the two.
+ */
+const baseConnector = buildConnector({});
+const privateIpBlockingDispatcher = new Agent({
+  connect(options, callback): void {
+    baseConnector(options, (err, socket) => {
+      if (err !== null) {
+        callback(err, null);
+        return;
+      }
+      const remote = socket.remoteAddress;
+      if (remote === undefined || isPrivateOrLocalIp(remote)) {
+        socket.destroy();
+        const where = remote !== undefined ? ` (${remote})` : '';
+        callback(new Error(`Refusing connection to private/local address${where}`), null);
+        return;
+      }
+      callback(null, socket);
+    });
+  },
+});
+
+/**
+ * `fetch` for UNTRUSTED outbound URLs (radio-stream validation/discovery).
+ * Identical to global fetch except every connection — the initial request AND
+ * every redirect hop — is refused if it lands on a private/local IP, defeating
+ * SSRF via redirects or DNS rebinding. Callers still get a standard `Response`,
+ * so no downstream code changes.
+ */
+export async function safeFetch(url: string, init: RequestInit): Promise<Response> {
+  // Use undici's OWN fetch: Node's bundled fetch rejects an externally-installed
+  // undici dispatcher (version-skewed internals). undici's RequestInit/Response
+  // and the global (undici-types) ones are the same WHATWG shape but nominally
+  // distinct copies, so the boundary is bridged through `unknown`; the only
+  // fields we pass (method/headers/signal/redirect) are identical in both. A
+  // rebinding/redirect refusal surfaces as a rejected fetch whose `.cause` is
+  // the connector Error above.
+  type UndiciInit = NonNullable<Parameters<typeof undiciFetch>[1]>;
+  const response = await undiciFetch(url, {
+    ...(init as unknown as UndiciInit),
+    dispatcher: privateIpBlockingDispatcher,
+  });
+  return response as unknown as Response;
 }

@@ -105,10 +105,15 @@ describe('attachLineLogger buffer cap (M6)', () => {
   let warnSpy: ReturnType<typeof vi.spyOn>;
 
   beforeEach(async () => {
+    // Real child stdout/stderr are libuv pipe handles that expose setEncoding
+    // AND unref (spawnMpv unrefs them so they don't hold the event loop open at
+    // shutdown); the fakes must carry both to mirror that surface.
     const stdout = new EventEmitter();
     (stdout as unknown as { setEncoding: () => void }).setEncoding = (): void => undefined;
+    (stdout as unknown as { unref: () => void }).unref = (): void => undefined;
     const stderr = new EventEmitter();
     (stderr as unknown as { setEncoding: () => void }).setEncoding = (): void => undefined;
+    (stderr as unknown as { unref: () => void }).unref = (): void => undefined;
     child = {
       stdout,
       stderr,

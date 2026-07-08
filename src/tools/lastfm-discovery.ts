@@ -782,13 +782,16 @@ function mergeSources(input: MergeInput): MergedAlbum[] {
   if (input.mbUsable) {
     const excluded = new Set(input.excludeSecondary);
     for (const rg of input.spine) {
-      // [F] secondary-type exclusion (types already lowercased at parse).
-      if (rg.secondaryTypes.some(t => excluded.has(t))) continue;
-
-      // [D] join: MBID first, else normalized title.
+      // [D] join: MBID first, else normalized title. Run BEFORE the
+      // secondary-type exclusion so a Last.fm row that matched an excluded
+      // release-group is still marked joined and does not resurface through the
+      // `includeUnverified` fallback (spec §3: [D] join precedes [F] filter).
       const key = normTitle(rg.title);
       const lastFm = byMbid.get(rg.mbid) ?? byNorm.get(key) ?? null;
       if (lastFm !== null) joinedNormKeys.add(normTitle(lastFm.name));
+
+      // [F] secondary-type exclusion (types already lowercased at parse).
+      if (rg.secondaryTypes.some(t => excluded.has(t))) continue;
 
       merged.push({
         title: rg.title,

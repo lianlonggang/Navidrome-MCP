@@ -3,7 +3,7 @@
  * Copyright (C) 2025
  */
 
-import { describe, it, expect, vi, beforeEach, afterEach, type MockedFunction } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 // Mock node:dns/promises BEFORE importing the validator so its internal
 // hostResolvesToPrivateIp uses the mock for redirect-target resolution.
@@ -12,12 +12,18 @@ vi.mock('node:dns/promises', () => ({
   lookup: (...args: unknown[]) => mockDnsLookup(...args),
 }));
 
+// The validator fetches untrusted URLs through network-safety's safeFetch
+// (a peer-IP-gated dispatcher). Mock ONLY that export; keep the real
+// isHttpUrlScheme / isPrivateOrLocalIp / hostResolvesToPrivateIp so the scheme
+// and redirect-target checks still run against the mocked DNS above.
+const mockFetch = vi.fn();
+vi.mock('../../../src/utils/network-safety.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../../src/utils/network-safety.js')>();
+  return { ...actual, safeFetch: (...args: unknown[]) => mockFetch(...args) };
+});
+
 import { validateRadioStream } from '../../../src/tools/radio-validation.js';
 import type { NavidromeClient } from '../../../src/client/navidrome-client.js';
-
-// Mock fetch globally
-const mockFetch = vi.fn();
-global.fetch = mockFetch as MockedFunction<typeof fetch>;
 
 // Mock file-type
 vi.mock('file-type', () => ({
@@ -223,6 +229,10 @@ describe('Radio Stream Validation', () => {
     });
 
     it('should detect non-audio content type', async () => {
+      // HEAD is text/html (inconclusive: not audio, no streaming headers), so
+      // the validator falls through to a GET sample. Once sampling runs, the
+      // sample response is the authoritative source for content-type — a real
+      // webpage GET echoes text/html too, so the mock carries it there.
       mockFetch.mockResolvedValueOnce({
         ok: true,
         status: 200,
@@ -234,7 +244,9 @@ describe('Radio Stream Validation', () => {
       mockFetch.mockResolvedValueOnce({
         ok: true,
         status: 200,
-        headers: new Headers(),
+        headers: new Headers({
+          'content-type': 'text/html',
+        }),
         arrayBuffer: () => Promise.resolve(new ArrayBuffer(1024)),
       });
 
@@ -717,6 +729,43 @@ describe('Radio Stream Validation', () => {
       expect(mockFetch).toHaveBeenCalledTimes(2);
       expect(result.validation.hasAudioContentType).toBe(false);
       expect(result.validation.hasStreamingHeaders).toBe(false);
+    });
+
+    it('prefers the GET sample response over an inconclusive HEAD when sampling ran', async () => {
+      // HEAD replies 200 but with a generic content-type and no ICY headers, so
+      // Step 2 is inconclusive and Step 3 samples. The GET sample carries the
+      // REAL signal (audio content-type + icy-name). Regression guard: the merge
+      // must NOT fall back to the (truthy) HEAD response and discard the sample —
+      // result.contentType / streamingHeaders must reflect the GET, not the HEAD.
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        headers: new Headers({
+          'content-type': 'application/octet-stream',
+        }),
+      });
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        headers: new Headers({
+          'content-type': 'audio/mpeg',
+          'icy-name': 'Sampled Station',
+          'icy-br': '128',
+        }),
+        arrayBuffer: () => Promise.resolve(new ArrayBuffer(1024)),
+      });
+
+      const result = await validateRadioStream(mockClient, {
+        url: 'https://cdn-generic.example.com/stream',
+      });
+
+      // HEAD inconclusive → GET sample fired.
+      expect(mockFetch).toHaveBeenCalledTimes(2);
+      // The sample's headers/status win the merge, not the inconclusive HEAD's.
+      expect(result.contentType).toBe('audio/mpeg');
+      expect(result.streamingHeaders['icy-name']).toBe('Sampled Station');
+      expect(result.validation.hasStreamingHeaders).toBe(true);
+      expect(result.success).toBe(true);
     });
   });
 

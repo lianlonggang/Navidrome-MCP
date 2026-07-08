@@ -98,6 +98,15 @@ function transformTagsToMeta(rawTags: unknown): TagWithMeta[] {
 }
 
 /**
+ * Max tag-value entries backfilled simultaneously. Each entry issues 2 requests
+ * (`/album` + `/song`), so this caps outbound concurrency at ~2× per chunk.
+ * Without it, `getTagDistribution` (many tag names × up to `distributionLimit`
+ * values, both fanned out via `Promise.all`) could open thousands of
+ * simultaneous connections to Navidrome from a single tool call.
+ */
+const BACKFILL_CONCURRENCY = 8;
+
+/**
  * Backfill `albumCount` / `songCount` for tag values whose `/api/tag` row
  * didn't include them (everything except `genre`). For each missing entry
  * we issue parallel `_end=1` queries to `/api/album` and `/api/song`
@@ -105,6 +114,9 @@ function transformTagsToMeta(rawTags: unknown): TagWithMeta[] {
  * headers via `requestWithLibraryFilterAndMeta`. Failures default the
  * affected counts to 0 so a single broken sub-query doesn't sink the
  * whole response.
+ *
+ * Processed in fixed-size chunks (`BACKFILL_CONCURRENCY`) so a large entry
+ * set doesn't fan every request out at once.
  *
  * NOTE: filter parameter names are lowercased tag names (e.g.
  * `releasetype=ep`, `media=CD`, `recordlabel=Sony`). This matches what
@@ -119,36 +131,39 @@ async function backfillTagCounts(
     return;
   }
 
-  await Promise.all(
-    needsBackfill.map(async (entry) => {
-      const filterName = entry.tag.tagName.toLowerCase();
-      // Empty tag values are meaningless to filter on; leave the zeroed
-      // defaults rather than make a request that would match everything.
-      if (entry.tag.tagValue.length === 0 || filterName.length === 0) {
-        return;
-      }
-      const valueParam = encodeURIComponent(entry.tag.tagValue);
-      const nameParam = encodeURIComponent(filterName);
-      const baseQuery = `_start=0&_end=1&${nameParam}=${valueParam}`;
+  for (let i = 0; i < needsBackfill.length; i += BACKFILL_CONCURRENCY) {
+    const chunk = needsBackfill.slice(i, i + BACKFILL_CONCURRENCY);
+    await Promise.all(
+      chunk.map(async (entry) => {
+        const filterName = entry.tag.tagName.toLowerCase();
+        // Empty tag values are meaningless to filter on; leave the zeroed
+        // defaults rather than make a request that would match everything.
+        if (entry.tag.tagValue.length === 0 || filterName.length === 0) {
+          return;
+        }
+        const valueParam = encodeURIComponent(entry.tag.tagValue);
+        const nameParam = encodeURIComponent(filterName);
+        const baseQuery = `_start=0&_end=1&${nameParam}=${valueParam}`;
 
-      try {
-        const [albumResult, songResult] = await Promise.all([
-          client.requestWithLibraryFilterAndMeta<unknown>(`/album?${baseQuery}`),
-          client.requestWithLibraryFilterAndMeta<unknown>(`/song?${baseQuery}`),
-        ]);
-        if (typeof albumResult.total === 'number') {
-          entry.tag.albumCount = albumResult.total;
+        try {
+          const [albumResult, songResult] = await Promise.all([
+            client.requestWithLibraryFilterAndMeta<unknown>(`/album?${baseQuery}`),
+            client.requestWithLibraryFilterAndMeta<unknown>(`/song?${baseQuery}`),
+          ]);
+          if (typeof albumResult.total === 'number') {
+            entry.tag.albumCount = albumResult.total;
+          }
+          if (typeof songResult.total === 'number') {
+            entry.tag.songCount = songResult.total;
+          }
+        } catch (error) {
+          logger.debug(
+            `backfillTagCounts: failed for ${entry.tag.tagName}=${entry.tag.tagValue}: ${error instanceof Error ? error.message : String(error)}`,
+          );
         }
-        if (typeof songResult.total === 'number') {
-          entry.tag.songCount = songResult.total;
-        }
-      } catch (error) {
-        logger.debug(
-          `backfillTagCounts: failed for ${entry.tag.tagName}=${entry.tag.tagValue}: ${error instanceof Error ? error.message : String(error)}`,
-        );
-      }
-    }),
-  );
+      }),
+    );
+  }
 }
 
 
@@ -222,6 +237,11 @@ export async function getTagDistribution(client: NavidromeClient, args: unknown)
 
     const tagResults = await Promise.all(
       tagNamesToFetch.map(async (tagName): Promise<TagDistribution | null> => {
+        // Only `genre` rows carry server-provided counts (see transformTagToMeta),
+        // so only for `genre` can we ask Navidrome for the true top-N by count.
+        // Every other tag name has no server-side counts to sort by, so its
+        // fetch is an alphabetical sample and is flagged `sampled` below.
+        const isGenre = tagName === 'genre';
         // Only the top `distributionLimit` values are ever surfaced (and only
         // that slice gets count-enriched below), so fetching more rows than
         // that is wasted work. Derive `_end` from `distributionLimit`, clamped
@@ -230,8 +250,8 @@ export async function getTagDistribution(client: NavidromeClient, args: unknown)
         const queryParams = new URLSearchParams({
           _start: '0',
           _end: String(fetchEnd),
-          _sort: 'tagValue',
-          _order: 'ASC',
+          _sort: isGenre ? 'songCount' : 'tagValue',
+          _order: isGenre ? 'DESC' : 'ASC',
           tag_name: tagName,
         });
 
@@ -281,7 +301,7 @@ export async function getTagDistribution(client: NavidromeClient, args: unknown)
             return null;
           }
 
-          return {
+          const dist: TagDistribution = {
             tagName,
             // Library-wide distinct count from X-Total-Count (recovered from the
             // same narrowed fetch); falls back to the surfaced count if the
@@ -294,6 +314,15 @@ export async function getTagDistribution(client: NavidromeClient, args: unknown)
             mostCommon,
             distribution: sortedTags,
           };
+          // For non-genre names the fetched slice is an alphabetical sample, not
+          // the true top-N by count (no server-side counts to sort by). Flag it
+          // so callers don't treat an arbitrary slice as the definitive
+          // distribution. `genre` is sorted by songCount server-side, so it's a
+          // true top-N and stays unflagged.
+          if (!isGenre) {
+            dist.sampled = true;
+          }
+          return dist;
         } catch (error) {
           // Skip tag types that don't exist in this library (e.g. 404), but log for observability
           logger.debug(`getTagDistribution: skipping tag name "${tagName}" due to error:`, error);

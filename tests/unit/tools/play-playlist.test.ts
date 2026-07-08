@@ -135,13 +135,22 @@ describe('play_playlist', () => {
     expect(client.requestWithLibraryFilterAndMeta).toHaveBeenCalledTimes(2);
   });
 
-  it('encodes the playlist ID in the request path', async () => {
+  it('places the (encoded) playlist ID in the request path', async () => {
     client.requestWithLibraryFilterAndMeta.mockResolvedValueOnce({ data: trackPage(0, 1), total: 1 });
 
-    await playPlaylist(client as never, { playlistId: 'has spaces/and?special' });
+    await playPlaylist(client as never, { playlistId: 'pl_abc-123' });
 
     const endpoint = client.requestWithLibraryFilterAndMeta.mock.calls[0]?.[0] as string;
-    expect(endpoint).toContain('/playlist/has%20spaces%2Fand%3Fspecial/tracks');
+    expect(endpoint).toContain('/playlist/pl_abc-123/tracks');
+  });
+
+  it('rejects a playlist ID with characters outside the ID pattern (defense-in-depth)', async () => {
+    // PlaylistIdSchema regex-validates against [A-Za-z0-9_-]+ before the value
+    // reaches the URL builder, on top of the call-site encodeURIComponent.
+    await expect(
+      playPlaylist(client as never, { playlistId: 'has spaces/and?special' }),
+    ).rejects.toThrow(/Playlist ID contains invalid characters/);
+    expect(client.requestWithLibraryFilterAndMeta).not.toHaveBeenCalled();
   });
 
   // ---------------------------------------------------------------------

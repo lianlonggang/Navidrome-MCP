@@ -355,6 +355,25 @@
         if (item.isCurrent) li.classList.add('current');
         else li.classList.remove('current');
         li.setAttribute('aria-label', queueAriaLabel(item));
+        // Metadata can arrive after the row is first painted: server-side
+        // enrichment is best-effort per chunk, so a row may render with a
+        // placeholder title/artist/album/duration and get real values on a
+        // later poll while index/songId (and thus the signature) stay the
+        // same. Refresh the visible text every poll so it never diverges from
+        // the aria-label (which already updates above).
+        const numEl = li.querySelector('.qnum');
+        if (numEl) numEl.textContent = String(item.index + 1);
+        const titleEl = li.querySelector('.qtitle');
+        if (titleEl) titleEl.textContent = item.title ?? (item.songId ?? 'Track');
+        const artistEl = li.querySelector('.qartist');
+        if (artistEl) {
+          const parts = [];
+          if (item.artist) parts.push(item.artist);
+          if (item.album) parts.push(item.album);
+          artistEl.textContent = parts.join(' · ');
+        }
+        const durEl = li.querySelector('.qdur');
+        if (durEl) durEl.textContent = item.duration ? fmtTime(item.duration) : '';
       }
       return;
     }
@@ -892,7 +911,7 @@
     }));
 
     if (!info.expose && info.host !== '0.0.0.0') {
-      els.netHint.textContent = 'Tip: set WEBUI_EXPOSE=true and restart the MCP server to allow LAN access.';
+      els.netHint.textContent = 'Tip: run navidrome-config and enable network exposure under Settings, then restart the server.';
     } else if ((info.interfaces ?? []).length === 0) {
       els.netHint.textContent = 'No LAN interfaces detected (only localhost is reachable).';
     } else {

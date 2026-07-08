@@ -22,6 +22,7 @@ import {
   MPV_COMMAND_TIMEOUT_QUICK_MS,
   MPV_IPC_CONNECT_DELAY_MS,
   MPV_IPC_CONNECT_RETRIES,
+  MPV_IPC_CONNECT_TIMEOUT_MS,
   MPV_LOAD_COMMANDS,
 } from '../../constants/timeouts.js';
 import { logger } from '../../utils/logger.js';
@@ -254,14 +255,17 @@ export class MpvIpc {
   private openSocket(path: string): Promise<void> {
     return new Promise((resolve, reject) => {
       const sock = createConnection({ path });
+      let timer: NodeJS.Timeout | null = null;
 
       const onError = (err: Error): void => {
+        if (timer !== null) clearTimeout(timer);
         sock.removeListener('connect', onConnect);
         sock.destroy();
         reject(err);
       };
 
       const onConnect = (): void => {
+        if (timer !== null) clearTimeout(timer);
         sock.removeListener('error', onError);
         this.socket = sock;
         sock.setEncoding('utf8');
@@ -274,6 +278,20 @@ export class MpvIpc {
         });
         resolve();
       };
+
+      // Per-attempt connect timeout. Without it a connect that neither fires
+      // 'connect' nor 'error' (exotic hung connect on the IPC path) would leave
+      // this promise unsettled forever, stalling connect()'s awaited retry loop
+      // and defeating its documented throw-within-budget contract. On fire we
+      // detach both handlers, tear down the socket, and reject so the loop
+      // treats it as a failed attempt and advances/throws as documented.
+      timer = setTimeout(() => {
+        sock.removeListener('connect', onConnect);
+        sock.removeListener('error', onError);
+        sock.destroy();
+        reject(new Error(`mpv IPC connect timed out after ${MPV_IPC_CONNECT_TIMEOUT_MS}ms`));
+      }, MPV_IPC_CONNECT_TIMEOUT_MS);
+      timer.unref();
 
       sock.once('connect', onConnect);
       sock.once('error', onError);

@@ -145,14 +145,17 @@ export function writeSettings(settings: SettingsFile): void {
   const tmpPath = `${path}.${process.pid}.${Math.floor(performance.now() * 1000).toString(36)}.tmp`;
   const fd = openSync(tmpPath, 'wx', 0o600);
   try {
-    // Enforce owner-only perms via the open fd, independent of the process
-    // umask (openSync's mode arg is applied as mode & ~umask, so a non-standard
-    // umask could otherwise strip the owner-write bit). No-op on Windows.
-    fchmodSync(fd, 0o600);
-    // Any failure after the tmp file is opened — write/fsync (e.g. disk-full)
-    // or the final rename — must remove the tmp file so a partial file holding
-    // plaintext credentials is never left orphaned on disk.
+    // Any failure after the tmp file is opened — chmod/write/fsync (e.g. an
+    // exotic FS returning ENOSYS from fchmod, or a disk-full write) or the final
+    // rename — must remove the tmp file so a partial file holding plaintext
+    // credentials is never left orphaned on disk. The fd lifetime is nested so
+    // closeSync always runs (even if fchmodSync throws) before the rename/cleanup
+    // path — a leaked descriptor also blocks unlink of the .tmp file on Windows.
     try {
+      // Enforce owner-only perms via the open fd, independent of the process
+      // umask (openSync's mode arg is applied as mode & ~umask, so a non-standard
+      // umask could otherwise strip the owner-write bit). No-op on Windows.
+      fchmodSync(fd, 0o600);
       writeSync(fd, `${JSON.stringify(settings, null, 2)}\n`);
       fsyncSync(fd);
     } finally {

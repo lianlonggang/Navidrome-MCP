@@ -38,10 +38,10 @@ import { logger } from '../utils/logger.js';
 
 // Get Song by ID
 export async function getSong(client: NavidromeClient, args: unknown): Promise<SongDTO> {
-  const params = SongIdSchema.parse(args);
-  logger.debug('Tool getSong called with args:', params);
-
   try {
+    const params = SongIdSchema.parse(args);
+    logger.debug('Tool getSong called with args:', params);
+
     const rawSong = await client.requestWithLibraryFilter<unknown>(`/song/${encodeURIComponent(params.songId)}`);
     // Single-item detail lookup: full metadata is the whole point and there is
     // no array to bloat context, so always return the verbose shape.
@@ -53,10 +53,10 @@ export async function getSong(client: NavidromeClient, args: unknown): Promise<S
 
 // Get Album by ID
 export async function getAlbum(client: NavidromeClient, args: unknown): Promise<AlbumDTO> {
-  const params = AlbumIdSchema.parse(args);
-  logger.debug('Tool getAlbum called with args:', params);
-
   try {
+    const params = AlbumIdSchema.parse(args);
+    logger.debug('Tool getAlbum called with args:', params);
+
     const rawAlbum = await client.requestWithLibraryFilter<unknown>(`/album/${encodeURIComponent(params.albumId)}`);
     // Single-item detail lookup — always verbose (see getSong).
     return transformToAlbumDTO(rawAlbum as RawAlbum, { verbose: true });
@@ -67,10 +67,10 @@ export async function getAlbum(client: NavidromeClient, args: unknown): Promise<
 
 // Get Artist by ID
 export async function getArtist(client: NavidromeClient, args: unknown): Promise<ArtistDTO> {
-  const params = ArtistIdSchema.parse(args);
-  logger.debug('Tool getArtist called with args:', params);
-
   try {
+    const params = ArtistIdSchema.parse(args);
+    logger.debug('Tool getArtist called with args:', params);
+
     const rawArtist = await client.requestWithLibraryFilter<unknown>(`/artist/${encodeURIComponent(params.artistId)}`);
     // Single-item detail lookup — always verbose (see getSong).
     return transformToArtistDTO(rawArtist as RawArtist, { verbose: true });
@@ -85,10 +85,10 @@ export async function getArtist(client: NavidromeClient, args: unknown): Promise
 export async function getSongPlaylists(client: NavidromeClient, args: unknown): Promise<{
   playlists: PlaylistDTO[];
 }> {
-  const params = GetSongPlaylistsSchema.parse(args);
-  logger.debug('Tool getSongPlaylists called with args:', params);
-
   try {
+    const params = GetSongPlaylistsSchema.parse(args);
+    logger.debug('Tool getSongPlaylists called with args:', params);
+
     const rawPlaylists = await client.requestWithLibraryFilter<unknown>(`/song/${encodeURIComponent(params.songId)}/playlists`);
     const playlists = transformPlaylistsToDTO(rawPlaylists);
 

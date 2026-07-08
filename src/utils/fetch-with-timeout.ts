@@ -68,9 +68,25 @@ export class FetchTimeoutError extends Error {
 }
 
 /**
+ * Misconfiguration warnings already emitted, keyed by `${envName}:${raw}`.
+ * These resolvers run on every request (see the per-call note on the getters
+ * below), so an unthrottled warn would repeat for the process lifetime and
+ * bury genuine WARN/ERROR lines. Keying by the raw value means CHANGING the
+ * env var to a different bad value surfaces a fresh warning.
+ */
+const warnedTimeoutEnv = new Set<string>();
+
+function warnOnce(key: string, message: string): void {
+  if (warnedTimeoutEnv.has(key)) return;
+  warnedTimeoutEnv.add(key);
+  logger.warn(message);
+}
+
+/**
  * Read a positive-integer env var, or return `fallback` if unset/invalid.
  * Clamps to `[MIN_FETCH_TIMEOUT_MS, MAX_FETCH_TIMEOUT_MS]` and warns once
- * if the configured value was clamped (likely misconfiguration).
+ * per distinct misconfigured value. The fallback/clamp RETURN values are
+ * still computed on every call — only the log emission is deduplicated.
  */
 function readTimeoutEnv(envName: string, fallback: number): number {
   const raw = process.env[envName];
@@ -79,19 +95,22 @@ function readTimeoutEnv(envName: string, fallback: number): number {
   }
   const parsed = Number.parseInt(raw, 10);
   if (!Number.isFinite(parsed) || parsed <= 0) {
-    logger.warn(
+    warnOnce(
+      `${envName}:${raw}`,
       `${envName}="${raw}" is not a positive integer; falling back to ${fallback}ms`,
     );
     return fallback;
   }
   if (parsed < MIN_FETCH_TIMEOUT_MS) {
-    logger.warn(
+    warnOnce(
+      `${envName}:${raw}`,
       `${envName}=${parsed} is below MIN_FETCH_TIMEOUT_MS (${MIN_FETCH_TIMEOUT_MS}); clamping`,
     );
     return MIN_FETCH_TIMEOUT_MS;
   }
   if (parsed > MAX_FETCH_TIMEOUT_MS) {
-    logger.warn(
+    warnOnce(
+      `${envName}:${raw}`,
       `${envName}=${parsed} exceeds MAX_FETCH_TIMEOUT_MS (${MAX_FETCH_TIMEOUT_MS}); ` +
         'clamping to keep total wall-clock under the MCP SDK 60s envelope after retry',
     );

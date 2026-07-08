@@ -378,6 +378,48 @@ describe('NavidromeClient', () => {
     it('also guards subsonicRequest', async () => {
       await expect(client.subsonicRequest('/../auth/login')).rejects.toThrow(/path-traversal/);
     });
+
+    it('guards requestWithLibraryFilter on the RAW endpoint before URL-normalization hides the ..', async () => {
+      // buildLibraryFilteredEndpoint runs the path through `new URL()`, which
+      // collapses dot-segments (`/album/../user/admin` -> `/user/admin`) before
+      // the downstream requestWithMeta guard sees it. The traversal check must
+      // therefore run on the raw endpoint first, or it's a no-op on this path.
+      await expect(client.requestWithLibraryFilter('/album/../user/admin')).rejects.toThrow(/path-traversal/);
+    });
+  });
+
+  describe('subsonicRequest response-shape guard', () => {
+    it('throws Subsonic-context error (not a native TypeError) on a literal null JSON body', async () => {
+      // A 200 OK Subsonic body of literal `null` parses fine but is not an
+      // object. Indexing it (`data['subsonic-response']`) would throw a native
+      // TypeError; the shape guard must reject with Subsonic context instead.
+      mockFetch.mockResolvedValueOnce(jsonResponse(null));
+
+      const client = new NavidromeClient(makeConfig());
+      await expect(client.subsonicRequest('/getStarred')).rejects.toThrow(/Subsonic API error: unexpected Subsonic response shape/);
+    });
+  });
+
+  describe('401 retry drains the discarded first body', () => {
+    it('cancels the first (401) response body before the retry fetch', async () => {
+      // An un-consumed 401 body keeps undici's socket out of the keep-alive
+      // pool until GC. The retry path must drain/cancel it so bursts of 401s
+      // (server-side token rotation) don't tie up sockets.
+      const first401 = new Response('unauthorized', { status: 401 });
+      const cancelSpy = vi.spyOn(first401.body!, 'cancel');
+
+      mockFetch
+        .mockResolvedValueOnce(tokenResponse('first'))
+        .mockResolvedValueOnce(first401)
+        .mockResolvedValueOnce(tokenResponse('second'))
+        .mockResolvedValueOnce(jsonResponse({ ok: true }));
+
+      const client = new NavidromeClient(makeConfig());
+      const result = await client.request<{ ok: boolean }>('/album/123');
+
+      expect(result).toEqual({ ok: true });
+      expect(cancelSpy).toHaveBeenCalledTimes(1);
+    });
   });
 
   describe('request() timeout + retry', () => {

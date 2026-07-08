@@ -45,6 +45,9 @@ import {
   buildEnhancedSearchParams,
   stripUnsupportedFilters,
 } from '../../../src/tools/search/filter-resolver.js';
+import { searchAll } from '../../../src/tools/search/search-orchestrator.js';
+import type { Config } from '../../../src/config.js';
+import type { NavidromeClient } from '../../../src/client/navidrome-client.js';
 
 describe('stripUnsupportedFilters', () => {
   it('drops tag/year keys for the artist endpoint (resolved keys)', () => {
@@ -200,6 +203,33 @@ describe('aggregateSearchResults (searchAll) — per-type appliedFilters truthfu
       albums: { genre: 'Rock' },
     });
     expect(result.appliedFilters?.artists).toBeUndefined();
+  });
+});
+
+describe('searchAll — year/starred reported in appliedFilters', () => {
+  // A minimal client whose meta-fetch returns empty pages; searchAll's
+  // appliedFilters is derived from the requested filters, not the results.
+  const mockClient = {
+    requestWithLibraryFilterAndMeta: vi
+      .fn()
+      .mockResolvedValue({ data: [], total: 0 }),
+  } as unknown as NavidromeClient;
+
+  it('folds year+starred into the per-type appliedFilters map', async () => {
+    const result = await searchAll(mockClient, {} as Config, {
+      query: '',
+      year: 2000,
+      starred: true,
+    });
+
+    // year is artist-unsupported (dropped for artists); starred applies to all
+    // three. Pre-fix, searchAll never reported either, so the artist slice was
+    // omitted and songs/albums lost the year/starred keys entirely.
+    expect(result.appliedFilters).toEqual({
+      songs: { year: '2000', starred: 'true' },
+      albums: { year: '2000', starred: 'true' },
+      artists: { starred: 'true' },
+    });
   });
 });
 

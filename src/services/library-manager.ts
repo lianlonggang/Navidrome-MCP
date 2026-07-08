@@ -328,46 +328,6 @@ class LibraryManager {
   }
 
   /**
-   * Add a library to the active set
-   */
-  addActiveLibrary(libraryId: number): void {
-    if (!this.userInfo) {
-      throw new Error('LibraryManager not initialized');
-    }
-
-    const availableLibraryIds = this.userInfo.libraries.map(lib => lib.id);
-    
-    if (!availableLibraryIds.includes(libraryId)) {
-      throw new Error(`Library ID ${libraryId} not available. Available: ${availableLibraryIds.join(', ')}`);
-    }
-
-    if (!this.activeLibraryIds.includes(libraryId)) {
-      this.activeLibraryIds.push(libraryId);
-      logger.info(`Added library ${libraryId} to active set`);
-    }
-  }
-
-  /**
-   * Remove a library from the active set
-   */
-  removeActiveLibrary(libraryId: number): void {
-    if (!this.userInfo) {
-      throw new Error('LibraryManager not initialized');
-    }
-
-    const index = this.activeLibraryIds.indexOf(libraryId);
-    if (index > -1) {
-      if (this.activeLibraryIds.length === 1) {
-        throw new Error(
-          `Cannot remove the last active library (${libraryId}); at least one library must remain active.`,
-        );
-      }
-      this.activeLibraryIds.splice(index, 1);
-      logger.info(`Removed library ${libraryId} from active set`);
-    }
-  }
-
-  /**
    * Generate library query parameters for API requests
    * Returns duplicate parameters in format: library_id=1&library_id=2
    */

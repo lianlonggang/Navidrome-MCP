@@ -595,6 +595,39 @@ describe('User Preferences Operations - Tier 1 Critical Tests', () => {
       expect(result.hasMore).toBe(false);
     });
 
+    // total===null fallback: when Navidrome omits or garbles X-Total-Count the
+    // client resolves `total: null` (navidrome-client `Number.isFinite ? … : null`),
+    // so `hasMore` falls back to `items.length === limit`. This is the sole
+    // paging signal the LLM uses, so pin BOTH outcomes of that branch.
+    it('derives hasMore=true from a full page when total is null', async () => {
+      mockClient.requestWithLibraryFilterAndMeta.mockResolvedValue({
+        data: [
+          { id: 'song-1', title: 'One' },
+          { id: 'song-2', title: 'Two' },
+        ],
+        total: null,
+      });
+
+      // limit matches the returned row count → items.length === limit → hasMore.
+      const result = await listStarredItems(mockClient, { type: 'songs', limit: 2 });
+
+      expect(result.count).toBe(2);
+      expect(result.hasMore).toBe(true);
+    });
+
+    it('derives hasMore=false from a short page when total is null', async () => {
+      mockClient.requestWithLibraryFilterAndMeta.mockResolvedValue({
+        data: [{ id: 'song-1', title: 'One' }],
+        total: null,
+      });
+
+      // Fewer rows than the requested limit → items.length !== limit → no more.
+      const result = await listStarredItems(mockClient, { type: 'songs', limit: 2 });
+
+      expect(result.count).toBe(1);
+      expect(result.hasMore).toBe(false);
+    });
+
     it('should handle empty top-rated items list gracefully', async () => {
       mockClient.request.mockResolvedValue([]);
 

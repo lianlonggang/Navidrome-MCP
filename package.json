@@ -71,6 +71,7 @@
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.17.4",
     "file-type": "^19.5.0",
+    "undici": "^7.28.0",
     "zod": "^4.1.4"
   },
   "devDependencies": {

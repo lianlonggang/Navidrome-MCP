@@ -10,7 +10,7 @@
 const FIELDS = [
   ['navidrome.url', 'url', 'string'],
   ['navidrome.username', 'username', 'string'],
-  ['navidrome.password', 'password', 'string'],
+  ['navidrome.password', 'password', 'secret'],
   ['library.defaultLibraryIds', 'defaultLibraries', 'csvIntArray'],
   ['library.filterCacheEnabled', 'filterCacheEnabled', 'bool', true],
   ['transport.type', 'transportType', 'string', 'stdio'],
@@ -94,6 +94,12 @@ function collect() {
         break;
       case 'string':
         value = el.value.trim();
+        break;
+      case 'secret':
+        // Secrets (e.g. password) are persisted verbatim — trimming could
+        // silently corrupt a credential that legitimately carries leading or
+        // trailing whitespace, producing hard-to-diagnose auth failures.
+        value = el.value;
         break;
       case 'stringOrNull': {
         const v = el.value.trim();

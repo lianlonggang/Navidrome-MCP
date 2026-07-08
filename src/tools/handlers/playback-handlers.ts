@@ -101,8 +101,6 @@ const tools: Tool[] = [
         level: {
           type: 'number',
           description: 'Target volume (0 = mute, 100 = full). Clamped to range.',
-          minimum: 0,
-          maximum: 100,
         },
       },
       required: ['level'],

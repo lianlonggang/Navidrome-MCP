@@ -300,6 +300,45 @@ describe('getArtistAlbums — unverified bucket (Waveshaper fixture)', () => {
   });
 });
 
+describe('getArtistAlbums — excludeSecondary vs includeUnverified', () => {
+  // Regression (src-tools-lastfm-discovery-ts-1): a spine RG dropped by the
+  // secondary-type exclusion whose Last.fm row matched it by title must be
+  // marked joined, so includeUnverified does NOT resurrect it as a
+  // lastfm-only/typeUnverified entry — that would silently undo excludeSecondary.
+  function routes(): FetchRoutes {
+    return {
+      mbArtistSearch: () => mbArtist('mb-testartist', 'TestArtist'),
+      mbBrowse: () => mbBrowseBody([
+        mbRg('rg-studio', 'Studio Album', '2020-01-01'),
+        mbRg('rg-live', 'Live At Wembley', '2021-01-01', ['Live']),
+      ]),
+      // The live album also charts on Last.fm (matches rg-live by title).
+      lastFm: () => lastFmBody([
+        lastFmAlbum('Studio Album', 500000),
+        lastFmAlbum('Live At Wembley', 300000),
+      ]),
+    };
+  }
+
+  it('does not resurrect an excluded-secondary album that matched a Last.fm row', async () => {
+    installFetch(routes());
+    client.requestWithLibraryFilterAndMeta.mockResolvedValue({ data: [], total: 0 });
+    const config = makeTestConfig({ lastFmApiKey: 'k' });
+
+    const result = await getArtistAlbums(asClient(client), config, {
+      artist: 'TestArtist',
+      includeUnverified: true,
+    });
+
+    const titles = result.albums.map(a => a.title);
+    expect(titles).toContain('Studio Album');
+    // The live album was joined at [D] then dropped at [F]; it must not reappear
+    // via the unverified fallback under either its MB title or its Last.fm name.
+    expect(titles).not.toContain('Live At Wembley');
+    expect(result.albums.every(a => a.title !== 'Live At Wembley')).toBe(true);
+  });
+});
+
 describe('getArtistAlbums — MB genres empty', () => {
   it('passes genres: [] through without any fallback Last.fm call', async () => {
     const fetchMock = installFetch({
