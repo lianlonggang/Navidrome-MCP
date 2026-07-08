@@ -69,3 +69,5 @@ Desktop.ini
 code-review/
 claude-code-review-workflow/
 claude-code-feature-workflow/
+aipg/
+.claude/commands
