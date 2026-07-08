@@ -55,10 +55,12 @@ export const ConfigSchema = z.object({
   // unauthenticated — fine for loopback or a network-policy-locked pod, but the
   // server warns loudly if it binds a non-loopback address without one.
   //
-  // DNS-rebinding protection is always on for the HTTP transport. The loopback
-  // and bound `host:port` are accepted automatically; a deployment reached
-  // through a proxy / k8s Service must add the external `host:port` clients use
-  // to `allowedHosts`. `allowedOrigins` is only needed for browser clients.
+  // Host filtering (DNS-rebinding protection): `allowedHosts`, when set, is
+  // always enforced. When unset, the unauthenticated loopback default gets an
+  // automatic loopback allow-list (the actual rebinding threat model); setting
+  // `authToken` or binding a non-loopback address disables the automatic list —
+  // remote deployments are reached via names we can't enumerate, and the bearer
+  // gate already defeats rebinding. `allowedOrigins` is only for browser clients.
   transport: z.object({
     type: z.enum(['stdio', 'http']).default('stdio'),
     host: z.string().default('127.0.0.1'),

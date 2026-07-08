@@ -56,7 +56,11 @@ function endpoint(handle: HttpTransport): URL {
  * forbids overriding Host, so we go through the low-level http client to exercise
  * DNS-rebinding protection. Resolves with the response status.
  */
-function postInitWithHost(handle: HttpTransport, hostHeader: string): Promise<number> {
+function postInitWithHost(
+  handle: HttpTransport,
+  hostHeader: string,
+  extraHeaders: Record<string, string> = {},
+): Promise<number> {
   const url = endpoint(handle);
   const body = JSON.stringify({
     jsonrpc: '2.0',
@@ -76,6 +80,7 @@ function postInitWithHost(handle: HttpTransport, hostHeader: string): Promise<nu
           'Content-Type': 'application/json',
           Accept: 'application/json, text/event-stream',
           'Content-Length': Buffer.byteLength(body),
+          ...extraHeaders,
         },
       },
       (res) => {
@@ -223,6 +228,61 @@ describe('Streamable HTTP transport — DNS-rebinding protection', () => {
     });
     try {
       expect(await postInitWithHost(handle, 'mcp.example.com:8080')).toBe(200);
+    } finally {
+      await handle.close();
+    }
+  });
+
+  it('skips Host filtering when a bearer token gates the endpoint', async () => {
+    // The bearer gate runs before the transport and already defeats rebinding
+    // (a lured browser cannot attach the token), so a token-gated deployment
+    // must accept whatever Host name clients reach it by.
+    const handle = await startHttpTransport({
+      host: '127.0.0.1',
+      port: 0,
+      authToken: 'tok',
+      createMcpServer: () => makeServer(),
+    });
+    try {
+      expect(
+        await postInitWithHost(handle, 'mcp.internal:3000', { Authorization: 'Bearer tok' }),
+      ).toBe(200);
+    } finally {
+      await handle.close();
+    }
+  });
+
+  it('skips Host filtering on a non-loopback bind (container/remote deployment)', async () => {
+    // A deliberately exposed bind is reached via names the server cannot know
+    // (compose service names, host.docker.internal, a VPS IP) — the old
+    // loopback auto-list 403'd every one of them.
+    const handle = await startHttpTransport({
+      host: '0.0.0.0',
+      port: 0,
+      createMcpServer: () => makeServer(),
+    });
+    try {
+      expect(await postInitWithHost(handle, 'nmcp-container:3000')).toBe(200);
+    } finally {
+      await handle.close();
+    }
+  });
+
+  it('still enforces an explicit allow-list, token or not', async () => {
+    const handle = await startHttpTransport({
+      host: '0.0.0.0',
+      port: 0,
+      authToken: 'tok',
+      allowedHosts: ['mcp.example.com:8080'],
+      createMcpServer: () => makeServer(),
+    });
+    try {
+      expect(
+        await postInitWithHost(handle, 'evil.example.com:9999', { Authorization: 'Bearer tok' }),
+      ).toBe(403);
+      expect(
+        await postInitWithHost(handle, 'mcp.example.com:8080', { Authorization: 'Bearer tok' }),
+      ).toBe(200);
     } finally {
       await handle.close();
     }

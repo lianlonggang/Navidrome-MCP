@@ -32,6 +32,13 @@ RUN corepack enable
 ENV NAVIDROME_CONFIG_PATH=/config/settings.json
 VOLUME ["/config"]
 
+# Container-shaped defaults for the env-var config fallback: this image exists
+# for the HTTP-transport use case, and a container must bind 0.0.0.0 for its
+# published port to work. Both are only fallback values — a mounted
+# /config/settings.json always wins, and `-e MCP_TRANSPORT=stdio` overrides.
+ENV MCP_TRANSPORT=http
+ENV MCP_HTTP_EXPOSE=true
+
 COPY package.json pnpm-lock.yaml ./
 RUN --mount=type=cache,id=pnpm,target=/pnpm/store \
     pnpm install --prod --frozen-lockfile --ignore-scripts

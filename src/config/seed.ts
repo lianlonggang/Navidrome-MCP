@@ -70,15 +70,37 @@ export function buildFormSeed(): SettingsFile {
   return importFromLegacyEnv();
 }
 
+/**
+ * Build a settings snapshot from `process.env` ONLY — the runtime fallback for
+ * headless/container deployments where the settings GUI is unreachable and env
+ * vars are the natural configuration channel (Docker `-e`, compose `environment`,
+ * an MCP client's `env` block).
+ *
+ * Used by `resolveConfigState()` when no usable `settings.json` exists. Deliberately
+ * narrower than {@link buildFormSeed}: it does NOT read legacy `.env` files, so the
+ * on-disk config story stays two-source (settings.json, else live env) rather than
+ * resurrecting file-based env drift. A `settings.json`, once created, always wins.
+ */
+export function buildEnvRuntimeSettings(): SettingsFile {
+  return settingsFromEnvSource((key) => {
+    const value = process.env[key];
+    return value !== undefined && value.trim() !== '' ? value : undefined;
+  });
+}
+
 function importFromLegacyEnv(): SettingsFile {
   const envFile = readLegacyEnvFile();
-  const get = (key: string): string | undefined => {
+  return settingsFromEnvSource((key: string): string | undefined => {
     const fromProcess = process.env[key];
     if (fromProcess !== undefined && fromProcess.trim() !== '') return fromProcess;
     const fromFile = envFile[key];
     if (fromFile !== undefined && fromFile.trim() !== '') return fromFile;
     return undefined;
-  };
+  });
+}
+
+/** Map env-style keys (via `get`) into the nested settings shape. */
+function settingsFromEnvSource(get: (key: string) => string | undefined): SettingsFile {
 
   const libsRaw = get('NAVIDROME_DEFAULT_LIBRARIES');
   const defaultLibraryIds = libsRaw !== undefined

@@ -23,6 +23,7 @@ import { ConfigSchema, type Config } from './config/schema.js';
 import { readSettings, type SettingsFile } from './config/store.js';
 import { mapStoreToConfig } from './config/map-config.js';
 import { getSettingsStorePath } from './config/store-path.js';
+import { buildEnvRuntimeSettings } from './config/seed.js';
 
 export type { Config } from './config/schema.js';
 
@@ -82,7 +83,11 @@ export async function resolveConfigState(): Promise<ConfigState> {
   const settings = readSettings();
   const url = settings?.navidrome?.url;
   if (settings === null || url === undefined || url.trim() === '') {
-    return { configured: false };
+    // No usable store → try the environment fallback before giving up. This is
+    // the headless/container path (Docker `-e`, compose `environment`, an MCP
+    // client's `env` block), where the settings GUI is unreachable and env vars
+    // are the only practical channel. The store, once created, always wins.
+    return await resolveEnvFallbackState();
   }
 
   try {
@@ -95,6 +100,36 @@ export async function resolveConfigState(): Promise<ConfigState> {
     // settings GUI instead of crashing. Log the specific reason so a malformed
     // hand-edited store doesn't silently look like a fresh first run.
     logger.warn('settings.json is present but invalid; entering setup mode:', err);
+    return { configured: false };
+  }
+}
+
+/**
+ * Environment-variable fallback for a missing/unusable store. Configured IFF
+ * `NAVIDROME_URL` is set and the env-derived config passes `ConfigSchema` —
+ * a present-but-broken env config logs WHY it was rejected (the reported
+ * container failure mode was env vars being silently ignored) and then falls
+ * through to setup mode.
+ */
+async function resolveEnvFallbackState(): Promise<ConfigState> {
+  const envSettings = buildEnvRuntimeSettings();
+  const envUrl = envSettings.navidrome?.url;
+  if (envUrl === undefined || envUrl.trim() === '') {
+    return { configured: false };
+  }
+
+  try {
+    const config = await loadConfig(envSettings);
+    logger.info(
+      `No settings.json at ${getSettingsStorePath()} — running from environment variables ` +
+      '(NAVIDROME_URL et al.). A settings.json created later takes precedence.'
+    );
+    return { configured: true, config };
+  } catch (err) {
+    logger.warn(
+      'NAVIDROME_URL is set but the environment-derived config is invalid; entering setup mode:',
+      err
+    );
     return { configured: false };
   }
 }

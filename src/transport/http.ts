@@ -56,10 +56,17 @@ interface HttpTransportOptions {
    */
   authToken?: string | undefined;
   /**
-   * Extra `Host` header values to accept for DNS-rebinding protection, on top of
-   * the loopback + bound `host:port` set derived automatically. A deployment
-   * reached through a proxy / k8s Service must list the external `host:port`
-   * clients actually use (the protection matches the literal `Host` header).
+   * `Host` header values to accept, enforced whenever provided (the check
+   * matches the literal `Host` header, e.g. `mcp.example.com:8080`).
+   *
+   * When NOT provided, Host filtering depends on the deployment shape:
+   * loopback bind without an auth token → automatic loopback allow-list
+   * (DNS-rebinding protection for the local, unauthenticated default);
+   * any other shape (bearer token set, or a deliberate non-loopback bind) →
+   * no Host filtering, because the token already defeats rebinding and a
+   * remote deployment cannot know its external names in advance — the old
+   * auto-list rejected every legitimate remote client (403 Invalid Host
+   * header) for container-to-container and proxied setups.
    */
   allowedHosts?: string[] | undefined;
   /**
@@ -202,7 +209,9 @@ export async function startHttpTransport(options: HttpTransportOptions): Promise
       sessionIdGenerator: (): string => randomUUID(),
       // DNS-rebinding protection: reject requests whose Host (and, if configured,
       // Origin) header isn't allow-listed, blocking a malicious web page from
-      // driving this server through the victim's browser even on loopback.
+      // driving this server through the victim's browser even on loopback. An
+      // empty `allowedHosts` (token-gated or exposed deployments — see the
+      // posture block below) makes the SDK skip the Host check entirely.
       enableDnsRebindingProtection: true,
       allowedHosts,
       ...(allowedOrigins !== undefined ? { allowedOrigins } : {}),
@@ -262,15 +271,34 @@ export async function startHttpTransport(options: HttpTransportOptions): Promise
   const address = httpServer.address();
   const boundPort = typeof address === 'object' && address !== null ? address.port : port;
 
-  // Allow-list the bound host:port plus the loopback aliases a local client may
-  // send, then add any operator-configured externals (proxy / Service names).
+  // Host-filtering posture (an empty list disables the SDK's Host check):
+  //   1. Operator listed hosts → enforce them (plus the loopback aliases and
+  //      bound host a local client/debug session legitimately sends).
+  //   2. No list, no token, loopback bind → the local unauthenticated default:
+  //      auto allow-list loopback so a malicious web page can't drive this
+  //      server via DNS rebinding through the user's own browser.
+  //   3. No list, but a bearer token or a deliberate non-loopback bind → no
+  //      Host filtering. The token gate (which runs before the transport)
+  //      already defeats rebinding, and an exposed deployment is reached via
+  //      external names/IPs we cannot enumerate — auto-listing loopback here
+  //      403'd every legitimate remote client (compose service names,
+  //      host.docker.internal, a VPS IP).
   const portStr = String(boundPort);
-  allowedHosts = [
-    ...new Set([
-      ...[host, '127.0.0.1', 'localhost', '[::1]'].map((h) => `${h}:${portStr}`),
-      ...(options.allowedHosts ?? []),
-    ]),
-  ];
+  const autoAllowList = [host, '127.0.0.1', 'localhost', '[::1]'].map((h) => `${h}:${portStr}`);
+  const operatorHosts = options.allowedHosts ?? [];
+  const loopbackBind = host === '127.0.0.1' || host === '::1' || host === 'localhost';
+  if (operatorHosts.length > 0) {
+    allowedHosts = [...new Set([...autoAllowList, ...operatorHosts])];
+  } else if (authToken === undefined && loopbackBind) {
+    allowedHosts = [...new Set(autoAllowList)];
+  } else {
+    allowedHosts = [];
+  }
+  logger.debug(
+    allowedHosts.length > 0
+      ? `MCP HTTP Host filtering active: ${allowedHosts.join(', ')}`
+      : 'MCP HTTP Host filtering off (bearer token set or non-loopback bind without allowedHosts)'
+  );
 
   const displayHost = host === '0.0.0.0' || host === '::' ? 'localhost' : host;
   const url = `http://${displayHost}:${String(boundPort)}${MCP_PATH}`;

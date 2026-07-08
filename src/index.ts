@@ -76,16 +76,20 @@ async function main(): Promise<void> {
     logger.debug('Node version:', process.version);
     logger.debug('Platform:', process.platform);
 
-    // First-run / degraded mode: when settings.json has no usable Navidrome URL
-    // we cannot build a client. Instead of crashing, start the loopback settings
-    // server, try to open the browser, and register a minimal toolset that hands
-    // the user the settings URL (the auto-open silently no-ops on headless/SSH,
-    // so the in-band URL is the real path to first config).
+    // First-run / degraded mode: when neither settings.json nor the env-var
+    // fallback (NAVIDROME_URL et al.) yields a usable config we cannot build a
+    // client. Instead of crashing, start the loopback settings server, try to
+    // open the browser, and register a minimal toolset that hands the user the
+    // settings URL (the auto-open silently no-ops on headless/SSH, so the
+    // in-band URL is the real path to first config).
     const state = await resolveConfigState();
     if (!state.configured) {
       const settings = await startConfigServer();
       logger.warn(
-        `Navidrome MCP is not configured. Open the settings page to set it up: ${settings.url}`
+        `Navidrome MCP is not configured. Open the settings page to set it up: ${settings.url}\n` +
+        'Headless/container? The settings page is loopback-only — configure via environment ' +
+        'variables instead: NAVIDROME_URL, NAVIDROME_USERNAME, NAVIDROME_PASSWORD ' +
+        '(plus MCP_TRANSPORT=http and MCP_HTTP_EXPOSE=true for a remote-reachable container).'
       );
       openBrowser(settings.url);
 

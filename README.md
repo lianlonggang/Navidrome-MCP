@@ -146,6 +146,13 @@ self-closes when idle; re-launch `navidrome-web` to start playing. Upgrading fro
 env-based setup? The form pre-fills from your previous `env`/`.env` values; verify and
 save.
 
+**Headless machines / containers:** the settings page binds loopback-only, so on a host
+with no browser (a VPS, a Docker container) configure with **environment variables**
+instead: when no `settings.json` exists, the server runs directly from `NAVIDROME_URL`,
+`NAVIDROME_USERNAME`, and `NAVIDROME_PASSWORD` (plus any optional variables such as
+`MCP_TRANSPORT`, `LASTFM_API_KEY`, …). A `settings.json`, once created, always takes
+precedence over env.
+
 **Required:** Navidrome URL, username, password.
 
 **Optional (set in the settings page):**
@@ -205,12 +212,14 @@ client at that URL (add the `Authorization` header if you set a token):
 }
 ```
 
-**DNS-rebinding protection** is always on for the HTTP transport: requests whose
-`Host` header isn't allow-listed are rejected, so a malicious web page can't drive the
-server through your browser even on loopback. The loopback aliases and the bound
-`host:port` are accepted automatically. If you reach the server through a reverse proxy
-or a Kubernetes Service, add the external `host:port` your clients use to
-`transport.allowedHosts` (otherwise legitimate requests get rejected), e.g.:
+**Host filtering (DNS-rebinding protection):** on the default bind — loopback with no
+auth token — requests whose `Host` header isn't a loopback alias are rejected, so a
+malicious web page can't drive the server through your own browser. Setting an
+`authToken` or binding a non-loopback address turns the automatic filter **off**: a
+remote deployment is reached by names the server can't know in advance (a compose
+service name, `host.docker.internal`, your VPS IP), and the bearer gate already blocks
+rebinding (a lured browser can't attach your token). To pin the accepted names
+explicitly, set `transport.allowedHosts` — it is always enforced when present:
 
 ```json
 "transport": {
@@ -226,11 +235,12 @@ In HTTP mode the server also exposes an unauthenticated liveness endpoint at
 `GET /healthz` (returns `200 {"status":"ok"}`) for container/orchestrator health
 checks — it reports only that the HTTP server is up, and performs no Navidrome call.
 
-On first run the settings form also pre-fills the transport from these environment
-variables (import-only, like all other settings): `MCP_TRANSPORT` (`stdio`|`http`),
-`MCP_HTTP_HOST`, `MCP_HTTP_PORT`, `MCP_HTTP_EXPOSE` (`true` to bind all interfaces),
-`MCP_HTTP_AUTH_TOKEN`, and `MCP_HTTP_ALLOWED_HOSTS` / `MCP_HTTP_ALLOWED_ORIGINS`
-(comma-separated).
+The transport can also be configured entirely through environment variables:
+`MCP_TRANSPORT` (`stdio`|`http`), `MCP_HTTP_HOST`, `MCP_HTTP_PORT`, `MCP_HTTP_EXPOSE`
+(`true` to bind all interfaces), `MCP_HTTP_AUTH_TOKEN`, and `MCP_HTTP_ALLOWED_HOSTS` /
+`MCP_HTTP_ALLOWED_ORIGINS` (comma-separated). These apply two ways: as the **runtime
+config** whenever no `settings.json` exists (the headless/container path), and as
+**pre-fill** for the settings form on first run.
 
 > **Security:** the HTTP transport binds **loopback (`127.0.0.1`) by default** and is
 > **unauthenticated unless you set `transport.authToken`** — the server holds an
@@ -243,24 +253,17 @@ variables (import-only, like all other settings): `MCP_TRANSPORT` (`stdio`|`http
 #### Running in Docker
 
 A [`Dockerfile`](Dockerfile) is included for exactly this HTTP-transport use case. The
-image reads its config from a mounted `settings.json` (it points
-`NAVIDROME_CONFIG_PATH` at `/config/settings.json`).
-
-> **Required config — the container does nothing useful without it.** The image runs the
-> same binary as everywhere else, which defaults to **stdio**. Mounted with a `settings.json`
-> that leaves `transport.type` at `stdio`, the container starts, binds **no socket**, and
-> never serves `/mcp` or `/healthz` — it just sits there "Up". You **must** set
-> `transport.type: "http"` and `transport.expose: true` (a container has to bind `0.0.0.0`,
-> not the default loopback, to be reachable through the published port). The bundled
-> `HEALTHCHECK` polls `/healthz`, so a container left in stdio mode shows as **unhealthy**
-> rather than silently broken.
-
-Create the `settings.json`, then mount it:
+image defaults to the HTTP transport bound to all interfaces (`MCP_TRANSPORT=http`,
+`MCP_HTTP_EXPOSE=true` are baked in as env fallbacks), so the only required config is
+your Navidrome credentials:
 
 ```bash
 docker build -t navidrome-mcp .
 docker run --rm -p 3000:3000 \
-  -v "$PWD/settings.json:/config/settings.json:ro" \
+  -e NAVIDROME_URL=http://your-navidrome:4533 \
+  -e NAVIDROME_USERNAME=mcp \
+  -e NAVIDROME_PASSWORD=your-password \
+  -e MCP_HTTP_AUTH_TOKEN=a-long-random-secret \
   navidrome-mcp
 ```
 
@@ -268,6 +271,64 @@ The MCP endpoint is then at `http://localhost:3000/mcp`. The image ships a Docke
 `HEALTHCHECK` that polls `GET /healthz` on port 3000 (so `docker ps` shows `healthy`;
 orchestrators can use the same endpoint), and runs as a non-root user. (mpv playback isn't
 included in the image — it's meant as a headless, networked MCP server.)
+
+Prefer a file over env vars? Mount a `settings.json` at `/config/settings.json` (the
+image points `NAVIDROME_CONFIG_PATH` there); a mounted file always wins over env:
+
+```bash
+docker run --rm -p 3000:3000 \
+  -v "$PWD/settings.json:/config/settings.json:ro" \
+  navidrome-mcp
+```
+
+> **With a mounted `settings.json`, the file is the whole config** — the image's env
+> defaults no longer apply. The file itself must set `transport.type: "http"` and
+> `transport.expose: true` (a container has to bind `0.0.0.0`, not loopback, to be
+> reachable through the published port); left at the `stdio` default, the container
+> starts, binds **no socket**, and the bundled `HEALTHCHECK` shows it **unhealthy**.
+
+#### Connecting from LibreChat
+
+Both variants go under `mcpServers:` in `librechat.yaml`.
+
+**Option A — stdio inside the LibreChat container (simplest).** LibreChat spawns the
+server itself; configure it entirely through the `env:` block (env vars are the runtime
+config whenever no `settings.json` exists):
+
+```yaml
+mcpServers:
+  navidrome:
+    type: stdio                # optional — inferred from `command`
+    command: npx
+    args: ["navidrome-mcp"]
+    env:
+      NAVIDROME_URL: "http://your-navidrome:4533"
+      NAVIDROME_USERNAME: "mcp"
+      NAVIDROME_PASSWORD: "${NAVIDROME_MCP_PASSWORD}"   # ${VAR} reads LibreChat's own env
+    serverInstructions: true
+```
+
+**Option B — separate container over Streamable HTTP** (LibreChat v0.7.8+). Run the
+Docker image from the previous section alongside LibreChat (same compose network), then:
+
+```yaml
+mcpServers:
+  navidrome:
+    type: streamable-http      # must be explicit — with only `url`, LibreChat assumes SSE
+    url: http://navidrome-mcp:3000/mcp
+    headers:
+      Authorization: "Bearer ${NAVIDROME_MCP_TOKEN}"
+```
+
+> **LibreChat blocks private/internal addresses by default** (SSRF protection). For a
+> compose-service or `host.docker.internal` URL, allow it explicitly in `librechat.yaml`
+> or the MCP server never initializes:
+>
+> ```yaml
+> mcpSettings:
+>   allowedAddresses:
+>     - "navidrome-mcp:3000"      # or "host.docker.internal:3000"
+> ```
 
 #### Running in Kubernetes
 
@@ -320,10 +381,13 @@ spec:
             items: [{ key: settings.json, path: settings.json }]
 ```
 
-Note `allowedHosts`: with DNS-rebinding protection on, the `host:port` your clients use to
-reach the Service (e.g. `navidrome-mcp:3000`) must be allow-listed, or requests are
-rejected. `env:` is **import-only** (it pre-fills the settings form on first run, not the
-running server), so the mounted `settings.json` is the source of truth in-cluster.
+Note `allowedHosts`: it is optional — with `authToken` set (or any non-loopback bind),
+automatic Host filtering is off, so in-cluster names just work. Listing hosts pins the
+exact `host:port` values clients may use (enforced whenever present) as
+defense-in-depth. Alternatively, skip the mounted file entirely and configure through
+env vars from a Secret (`NAVIDROME_URL`, `NAVIDROME_USERNAME`, `NAVIDROME_PASSWORD`,
+`MCP_HTTP_AUTH_TOKEN`, …) — env is the runtime config whenever no `settings.json`
+exists, and a mounted `settings.json` wins when both are present.
 
 ### Installing mpv (optional)
 

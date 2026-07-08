@@ -32,7 +32,10 @@ import { ErrorFormatter } from '../utils/error-formatter.js';
 export function registerDegradedTools(server: Server, settingsUrl: string): void {
   const notice =
     `Navidrome MCP is not configured yet. Open the settings page to set it up:\n  ${settingsUrl}\n` +
-    `Enter your Navidrome URL, username, and password (plus any optional features), Save, then restart this server.`;
+    `Enter your Navidrome URL, username, and password (plus any optional features), Save, then restart this server.\n` +
+    `On a headless machine or in a container (where that loopback URL is unreachable), set environment ` +
+    `variables instead and restart: NAVIDROME_URL, NAVIDROME_USERNAME, NAVIDROME_PASSWORD — they are used ` +
+    `automatically whenever no settings.json exists.`;
 
   const tools: Tool[] = [
     {

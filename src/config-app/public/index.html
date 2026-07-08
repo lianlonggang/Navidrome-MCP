@@ -62,7 +62,7 @@
             <button type="button" id="transportAuthTokenGen" class="btn secondary">Generate</button>
           </span>
         </label>
-        <label>Allowed hosts <span class="hint">http only — DNS-rebinding protection is always on; loopback and the bound <code>host:port</code> are allowed automatically. Behind a proxy / k8s Service, list the external <code>host:port</code> clients use, comma-separated (e.g. <code>mcp.example.com:3000</code>).</span>
+        <label>Allowed hosts <span class="hint">http only — optional <code>Host</code>-header allow-list, always enforced when set (comma-separated, e.g. <code>mcp.example.com:3000</code>). When blank: the unauthenticated loopback bind auto-allows loopback only (DNS-rebinding protection); with an auth token or a non-loopback bind, Host filtering is off so remote names just work.</span>
           <input id="transportAllowedHosts" type="text" placeholder="(auto)" />
         </label>
         <label>Allowed origins <span class="hint">http only — only needed for browser clients; comma-separated <code>Origin</code> values to accept</span>

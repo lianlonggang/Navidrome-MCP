@@ -81,8 +81,12 @@ Layout you'll need to navigate. Most tasks touch 1-2 of these.
 ## Environment
 
 Configuration lives in a single canonical **`settings.json`** store — the
-GUI-managed source of truth. **Runtime no longer reads `process.env`/`.env` for
-config**; env is consulted only once, to pre-fill the settings form on first run.
+GUI-managed source of truth. When the store is **absent or unusable**, runtime
+falls back to **environment variables** (`NAVIDROME_URL`/`NAVIDROME_USERNAME`/
+`NAVIDROME_PASSWORD` + the optional `MCP_*`/feature vars, via
+`buildEnvRuntimeSettings()` — `process.env` only, never `.env` files) — the
+headless/container path. A usable store always wins over env. `.env` files are
+import-only: they pre-fill the settings form on first run, nothing else.
 Store path (mirrors `getDefaultIpcPath()`):
 
 - Linux: `${XDG_CONFIG_HOME:-~/.config}/navidrome-mcp/settings.json`

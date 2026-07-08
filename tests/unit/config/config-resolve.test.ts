@@ -17,21 +17,37 @@ const BASE = {
   navidrome: { url: 'http://h:4533', username: 'u', password: 'p' },
 };
 
+// Env vars that feed the runtime env fallback. Cleared per test so the suite is
+// deterministic regardless of the developer's shell or CI's injected
+// NAVIDROME_URL/USERNAME/PASSWORD (which would otherwise legitimately activate
+// the fallback and flip the "unconfigured" expectations).
+const FALLBACK_ENV_KEYS = [
+  'NAVIDROME_URL', 'NAVIDROME_USERNAME', 'NAVIDROME_PASSWORD',
+  'MCP_TRANSPORT', 'MCP_HTTP_HOST', 'MCP_HTTP_PORT', 'MCP_HTTP_EXPOSE',
+  'MCP_HTTP_AUTH_TOKEN', 'MCP_HTTP_ALLOWED_HOSTS', 'MCP_HTTP_ALLOWED_ORIGINS',
+];
+
 describe('config resolution', () => {
   let dir: string;
-  let savedCfg: string | undefined;
+  let savedEnv: Record<string, string | undefined>;
   let file: string;
 
   beforeEach(() => {
-    savedCfg = process.env['NAVIDROME_CONFIG_PATH'];
+    savedEnv = { NAVIDROME_CONFIG_PATH: process.env['NAVIDROME_CONFIG_PATH'] };
+    for (const k of FALLBACK_ENV_KEYS) {
+      savedEnv[k] = process.env[k];
+      delete process.env[k];
+    }
     dir = mkdtempSync(join(tmpdir(), 'nd-cfg-'));
     file = join(dir, 'settings.json');
     process.env['NAVIDROME_CONFIG_PATH'] = file;
   });
 
   afterEach(() => {
-    if (savedCfg === undefined) delete process.env['NAVIDROME_CONFIG_PATH'];
-    else process.env['NAVIDROME_CONFIG_PATH'] = savedCfg;
+    for (const [k, v] of Object.entries(savedEnv)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
     rmSync(dir, { recursive: true, force: true });
   });
 
@@ -190,6 +206,71 @@ describe('config resolution', () => {
 
     it('is unconfigured when present-but-invalid (bad URL)', async () => {
       write({ navidrome: { url: 'not-a-url', username: 'u', password: 'p' } });
+      expect(await resolveConfigState()).toEqual({ configured: false });
+    });
+  });
+
+  describe('resolveConfigState — environment fallback (headless/containers)', () => {
+    const setEnvCreds = (): void => {
+      process.env['NAVIDROME_URL'] = 'http://env-host:4533';
+      process.env['NAVIDROME_USERNAME'] = 'env-user';
+      process.env['NAVIDROME_PASSWORD'] = 'env-pass';
+    };
+
+    it('runs from env vars when the store is absent', async () => {
+      setEnvCreds();
+      const state = await resolveConfigState();
+      expect(state.configured).toBe(true);
+      if (state.configured) {
+        expect(state.config.navidromeUrl).toBe('http://env-host:4533');
+        expect(state.config.navidromeUsername).toBe('env-user');
+        expect(state.config.navidromePassword).toBe('env-pass');
+        // No MCP_TRANSPORT → stdio default, same as a store-less GUI install.
+        expect(state.config.transport.type).toBe('stdio');
+      }
+    });
+
+    it('maps the http transport env vars through the fallback', async () => {
+      setEnvCreds();
+      process.env['MCP_TRANSPORT'] = 'http';
+      process.env['MCP_HTTP_EXPOSE'] = 'true';
+      process.env['MCP_HTTP_PORT'] = '9090';
+      process.env['MCP_HTTP_AUTH_TOKEN'] = 'tok-abc';
+      const state = await resolveConfigState();
+      expect(state.configured).toBe(true);
+      if (state.configured) {
+        expect(state.config.transport.type).toBe('http');
+        expect(state.config.transport.host).toBe('0.0.0.0');
+        expect(state.config.transport.port).toBe(9090);
+        expect(state.config.transport.expose).toBe(true);
+        expect(state.config.transport.authToken).toBe('tok-abc');
+      }
+    });
+
+    it('lets an existing store win over env vars', async () => {
+      write(BASE);
+      setEnvCreds();
+      const state = await resolveConfigState();
+      expect(state.configured).toBe(true);
+      if (state.configured) {
+        expect(state.config.navidromeUrl).toBe('http://h:4533');
+      }
+    });
+
+    it('is unconfigured when the env config is incomplete (URL only)', async () => {
+      process.env['NAVIDROME_URL'] = 'http://env-host:4533';
+      expect(await resolveConfigState()).toEqual({ configured: false });
+    });
+
+    it('is unconfigured when NAVIDROME_URL is not a valid URL', async () => {
+      process.env['NAVIDROME_URL'] = 'not-a-url';
+      process.env['NAVIDROME_USERNAME'] = 'u';
+      process.env['NAVIDROME_PASSWORD'] = 'p';
+      expect(await resolveConfigState()).toEqual({ configured: false });
+    });
+
+    it('ignores a blank NAVIDROME_URL', async () => {
+      process.env['NAVIDROME_URL'] = '   ';
       expect(await resolveConfigState()).toEqual({ configured: false });
     });
   });
