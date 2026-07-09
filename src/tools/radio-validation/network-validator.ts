@@ -17,7 +17,7 @@
  */
 
 import { RADIO_VALIDATION } from '../../constants/timeouts.js';
-import { hostResolvesToPrivateIp, isHttpUrlScheme, safeFetch } from '../../utils/network-safety.js';
+import { describeFetchError, hostResolvesToPrivateIp, isHttpUrlScheme, PRIVATE_ADDRESS_REFUSAL, safeFetch } from '../../utils/network-safety.js';
 
 // Validation context for internal use
 export interface ValidationContext {
@@ -98,7 +98,7 @@ async function fetchWithManualRedirects(
 
     try {
       if (await hostResolvesToPrivateIp(nextUrl.hostname)) {
-        return { response: null, finalUrl: currentUrl, error: `Refusing to follow redirect to private/local address: ${nextUrl.hostname}` };
+        return { response: null, finalUrl: currentUrl, error: `Refusing to follow redirect to ${PRIVATE_ADDRESS_REFUSAL}: ${nextUrl.hostname}` };
       }
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Unknown error';
@@ -151,7 +151,7 @@ export async function validateWithHead(
       if (err.name === 'AbortError') {
         return { response: null, finalUrl: context.url, error: `HEAD request timeout after ${headTimeout}ms` };
       }
-      return { response: null, finalUrl: context.url, error: `HEAD request failed: ${err.message}` };
+      return { response: null, finalUrl: context.url, error: `HEAD request failed: ${describeFetchError(err)}` };
     }
     return { response: null, finalUrl: context.url, error: 'Unknown HEAD request error' };
   }
@@ -317,7 +317,7 @@ export async function sampleAudioData(
       if (err.name === 'AbortError') {
         return { buffer: null, headers: null, finalUrl: url, error: `Audio sampling timeout after ${sampleTimeout}ms` };
       }
-      return { buffer: null, headers: null, finalUrl: url, error: `Audio sampling failed: ${err.message}` };
+      return { buffer: null, headers: null, finalUrl: url, error: `Audio sampling failed: ${describeFetchError(err)}` };
     }
     return { buffer: null, headers: null, finalUrl: url, error: 'Unknown audio sampling error' };
   }

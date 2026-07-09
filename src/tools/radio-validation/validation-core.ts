@@ -37,7 +37,7 @@ import {
   generateRecommendations,
   type StreamValidationResult,
 } from './recommendation-engine.js';
-import { isHttpUrlScheme } from '../../utils/network-safety.js';
+import { describeFetchError, isHttpUrlScheme } from '../../utils/network-safety.js';
 
 // Validation parameter schema. The validator probes URLs over Node's fetch,
 // which only supports http:// and https://. Other valid radio protocols
@@ -202,7 +202,7 @@ export async function validateRadioStream(
     if (err instanceof Error && err.name === 'AbortError') {
       errors.push('Validation aborted due to overall timeout');
     } else {
-      errors.push(`Validation failed: ${err instanceof Error ? err.message : 'Unknown error'}`);
+      errors.push(`Validation failed: ${describeFetchError(err)}`);
     }
   } finally {
     clearTimeout(overallTimeoutId);

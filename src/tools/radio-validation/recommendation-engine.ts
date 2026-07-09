@@ -16,6 +16,8 @@
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
+import { PRIVATE_ADDRESS_REFUSAL } from '../../utils/network-safety.js';
+
 // Stream validation result interface (partial for recommendations)
 export interface StreamValidationResult {
   success: boolean;
@@ -86,7 +88,17 @@ export function generateRecommendations(
     recommendations.push('Try finding alternative streams at radio-browser.info');
   } else {
     recommendations.push('Stream validation encountered an error');
-    recommendations.push('Try again later or check your network connection');
+
+    // A private/local refusal is deliberate (SSRF protection), not a network
+    // hiccup — "try again later" would be misleading. The refusal messages come
+    // from network-safety (dispatcher) and network-validator (redirect gate).
+    const allMessages = [...(result.errors ?? []), ...(result.warnings ?? [])];
+    const refusedPrivateAddress = allMessages.some((m) => m.includes(PRIVATE_ADDRESS_REFUSAL));
+    if (refusedPrivateAddress) {
+      recommendations.push('The URL points to a private/internal network address, which this validator refuses to probe (SSRF protection) — only publicly reachable streams can be validated');
+    } else {
+      recommendations.push('Try again later or check your network connection');
+    }
   }
 
   return recommendations;

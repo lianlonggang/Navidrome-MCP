@@ -20,6 +20,7 @@ import {
   isPrivateOrLocalIp,
   hostResolvesToPrivateIp,
   safeFetch,
+  describeFetchError,
 } from '../../../src/utils/network-safety.js';
 
 describe('network-safety', () => {
@@ -192,6 +193,62 @@ describe('network-safety', () => {
       await expect(hostResolvesToPrivateIp('nonexistent.example.com')).rejects.toThrow('ENOTFOUND');
     });
   });
+
+  describe('describeFetchError', () => {
+    it('returns the message as-is when there is no cause', () => {
+      expect(describeFetchError(new Error('Network error'))).toBe('Network error');
+    });
+
+    it("unwraps undici's generic 'fetch failed' to the cause message", () => {
+      const err = new TypeError('fetch failed', {
+        cause: new Error('Refusing connection to private/local address (127.0.0.1)'),
+      });
+      expect(describeFetchError(err)).toBe('Refusing connection to private/local address (127.0.0.1)');
+    });
+
+    it('walks nested causes to the deepest non-empty message', () => {
+      const err = new TypeError('fetch failed', {
+        cause: new Error('connect error', { cause: new Error('getaddrinfo ENOTFOUND stream.example.com') }),
+      });
+      expect(describeFetchError(err)).toBe('getaddrinfo ENOTFOUND stream.example.com');
+    });
+
+    it('digs into an empty-message AggregateError (multi-address connect failure)', () => {
+      const aggregate = new AggregateError([
+        new Error('connect ECONNREFUSED 93.184.216.34:80'),
+        new Error('connect ECONNREFUSED 2606:2800:220:1::1:80'),
+      ], '');
+      const err = new TypeError('fetch failed', { cause: aggregate });
+      expect(describeFetchError(err)).toBe('connect ECONNREFUSED 93.184.216.34:80');
+    });
+
+    it('prefers an AggregateError own non-empty message over digging into .errors', () => {
+      const aggregate = new AggregateError([new Error('inner detail')], 'aggregate context');
+      const err = new TypeError('fetch failed', { cause: aggregate });
+      expect(describeFetchError(err)).toBe('aggregate context');
+    });
+
+    it('keeps the outer message when the cause chain has nothing better', () => {
+      const err = new TypeError('fetch failed', { cause: new Error('') });
+      expect(describeFetchError(err)).toBe('fetch failed');
+    });
+
+    it('falls back to Unknown error for non-Error input and empty messages', () => {
+      expect(describeFetchError('boom')).toBe('Unknown error');
+      expect(describeFetchError(undefined)).toBe('Unknown error');
+      expect(describeFetchError(new Error(''))).toBe('Unknown error');
+    });
+
+    it('terminates on circular cause chains', () => {
+      const a = new Error('outer');
+      const b = new Error('inner');
+      (a as { cause?: unknown }).cause = b;
+      (b as { cause?: unknown }).cause = a;
+      // Which message wins is arbitrary for a pathological cycle — the
+      // property under test is termination via the depth cap.
+      expect(['outer', 'inner']).toContain(describeFetchError(a));
+    });
+  });
 });
 
 describe('safeFetch — peer-IP gating (real dispatcher, no mock)', () => {
@@ -230,5 +287,12 @@ describe('safeFetch — peer-IP gating (real dispatcher, no mock)', () => {
     // .cause carries our connector Error.
     const cause = err instanceof Error && err.cause instanceof Error ? err.cause.message : String(err);
     expect(cause).toMatch(/private\/local address/i);
+  });
+
+  it('describeFetchError recovers the refusal reason from the real wrapped rejection', async () => {
+    // End-to-end guard on undici's actual wrapping shape: if a future undici
+    // stops putting the connector error in .cause, this catches it.
+    const err = await safeFetch(`http://127.0.0.1:${port}/`, {}).catch((e: unknown) => e);
+    expect(describeFetchError(err)).toMatch(/Refusing connection to private\/local address/);
   });
 });

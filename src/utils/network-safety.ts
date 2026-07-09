@@ -170,6 +170,16 @@ function isLikelyIpLiteral(host: string): boolean {
  * so there is no window between the two.
  */
 const baseConnector = buildConnector({});
+
+/**
+ * Marker phrase shared by every private/local refusal message (the dispatcher
+ * below and the validator's redirect gate). The recommendation engine matches
+ * on it to distinguish a deliberate SSRF refusal from a network hiccup — keep
+ * all producers and consumers on this constant so a reword can't silently
+ * break that detection.
+ */
+export const PRIVATE_ADDRESS_REFUSAL = 'private/local address';
+
 const privateIpBlockingDispatcher = new Agent({
   connect(options, callback): void {
     baseConnector(options, (err, socket) => {
@@ -181,13 +191,42 @@ const privateIpBlockingDispatcher = new Agent({
       if (remote === undefined || isPrivateOrLocalIp(remote)) {
         socket.destroy();
         const where = remote !== undefined ? ` (${remote})` : '';
-        callback(new Error(`Refusing connection to private/local address${where}`), null);
+        callback(new Error(`Refusing connection to ${PRIVATE_ADDRESS_REFUSAL}${where}`), null);
         return;
       }
       callback(null, socket);
     });
   },
 });
+
+/**
+ * Best human-readable message for a failed fetch. undici wraps every
+ * connection-level failure — including the private-IP refusal from the
+ * dispatcher above — in a generic `TypeError: fetch failed` whose real reason
+ * lives in `.cause` (sometimes nested; multi-address connect failures arrive
+ * as an AggregateError with an empty message of its own). Callers surfacing
+ * fetch errors to users should report this instead of `err.message`, so
+ * "Refusing connection to private/local address (127.0.0.1)" or
+ * "getaddrinfo ENOTFOUND host" isn't flattened to "fetch failed".
+ */
+export function describeFetchError(err: unknown): string {
+  if (!(err instanceof Error)) return 'Unknown error';
+
+  let best = err.message;
+  let cause: unknown = err.cause;
+  // Depth cap guards against circular cause chains; deeper = more specific.
+  for (let depth = 0; depth < 8 && cause instanceof Error; depth++) {
+    if (cause.message !== '') {
+      best = cause.message;
+    } else if (cause instanceof AggregateError) {
+      const first = cause.errors.find((e): e is Error => e instanceof Error && e.message !== '');
+      if (first !== undefined) best = first.message;
+    }
+    cause = cause.cause;
+  }
+
+  return best === '' ? 'Unknown error' : best;
+}
 
 /**
  * `fetch` for UNTRUSTED outbound URLs (radio-stream validation/discovery).

@@ -23,6 +23,10 @@ vi.mock('../../../src/utils/network-safety.js', async (importOriginal) => {
 });
 
 import { validateRadioStream } from '../../../src/tools/radio-validation.js';
+// Resolves through the vi.mock above, whose factory spreads the ACTUAL module —
+// so this is the real production constant, keeping the mock rejection below in
+// sync with the dispatcher's real message shape.
+import { PRIVATE_ADDRESS_REFUSAL } from '../../../src/utils/network-safety.js';
 import type { NavidromeClient } from '../../../src/client/navidrome-client.js';
 
 // Mock file-type
@@ -168,6 +172,32 @@ describe('Radio Stream Validation', () => {
       expect(result.success).toBe(false);
       expect(result.status).toBe('error');
       expect(result.validation.httpAccessible).toBe(false);
+    });
+
+    it("surfaces the safeFetch refusal reason instead of undici's generic 'fetch failed'", async () => {
+      // The peer-IP-gated dispatcher rejects with the refusal in .cause, which
+      // undici wraps in a bare "fetch failed" TypeError. The validator must
+      // report the cause — and recommend accordingly — not the wrapper. The
+      // cause message is built from the production constant so a reword of the
+      // dispatcher message can't leave this test green while the
+      // recommendation-engine match silently breaks.
+      mockFetch.mockRejectedValue(new TypeError('fetch failed', {
+        cause: new Error(`Refusing connection to ${PRIVATE_ADDRESS_REFUSAL} (127.0.0.1)`),
+      }));
+
+      const result = await validateRadioStream(mockClient, {
+        url: 'http://127.0.0.1:4533/api/admin',
+      });
+
+      expect(result.success).toBe(false);
+      expect(result.status).toBe('error');
+      const allMessages = [...result.errors, ...result.warnings];
+      expect(allMessages.some((m) => m.includes(`Refusing connection to ${PRIVATE_ADDRESS_REFUSAL} (127.0.0.1)`))).toBe(true);
+      expect(allMessages.some((m) => m.includes('fetch failed'))).toBe(false);
+      // The recommendation must explain the deliberate refusal, not suggest
+      // a network hiccup.
+      expect(result.recommendations.some((r) => r.includes('SSRF protection'))).toBe(true);
+      expect(result.recommendations).not.toContain('Try again later or check your network connection');
     });
 
     it('should handle timeout errors', async () => {
